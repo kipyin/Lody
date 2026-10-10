@@ -10,6 +10,17 @@ The catalog pins `effect` and `@effect/vitest` to 4.0.2. The [v4 migration
 record](../notes/implemented/architecture/2026-10-09-effect-v4-migration.md)
 explains version selection and the preserved lifecycle behavior.
 
+## Version-matched reference
+
+Use the repository [Effect skill](../skills/effect-ts/SKILL.md) before Effect work.
+Resolve the dependency from the consuming package, read its `effect/AGENTS.md`
+completely, then follow its required links and search `ai-docs`/`src` as needed.
+A root `node_modules/effect` path is not guaranteed in this pnpm workspace.
+Use the [migration skill](../skills/effect-v3-to-v4/SKILL.md) for an explicit v3
+migration. Both retain Lody's locked-version and behavioral acceptance rules.
+The [reference decision](../notes/implemented/process/2026-10-11-effect-reference-skills.md)
+explains why a tracked Effect subtree is not currently recommended.
+
 ## When to use Effect
 
 - New modules and services: a `Context.Service` for the capability, a `Layer` for
@@ -96,7 +107,9 @@ owner must await `terminate`; it is not a scoped Effect API.
 ## File locks
 
 `withFileLock(name, body, options)` requires `FileLocks`. `FileLocksLive` captures
-official FileSystem, native NodeProcess and frozen FileLockHost dependencies.
+official FileSystem, native NodeProcess and FileLockHost dependencies. The host
+fixes pid and resolves the default lock directory on each operation; tests may
+inject a fixed directory.
 `fileLockLayer` supplies Node implementations at composition. One service instance
 owns local Ref/Deferred admission and unresolved releases; each operation owns its
 candidate and acquired file. See the [decision and preserved lock policy](../notes/implemented/architecture/2026-10-10-effect-file-lock-lifecycle.md).
