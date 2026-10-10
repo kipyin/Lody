@@ -8,7 +8,7 @@ PR: [#1377](https://github.com/LodyAI/Lody/pull/1377)
 
 ## 摘要
 
-共享文件锁原先以 Promise 尾链、定时退避和异步上下文单例管理生命周期，并吞掉释放失败。此改动让 FileLocks Layer 实例拥有本地登记表，由每个操作通过 Effect acquire-use-release 拥有真实锁文件。Ref 和 Deferred 保留严格 FIFO 并移除取消票据；通过独占 hard link 发布完整元数据。一个兼容 runtime 同时服务旧 Promise 调用方和原生 catalog 写入。保留竞争期限与失效锁年龄策略，但 I/O 和释放失败变为可观察；真实 Windows 与不支持 hard link 的文件系统仍未验证。
+Promise 锁队列与定时重试使取消边界模糊，并吞掉清理失败。FileLocks Layer 现在拥有 FIFO 排队与释放失败的锁代；操作通过 Scope 和独占 hard link 发布完整元数据，未迁移调用方共用一个兼容 runtime。Clock/Schedule 保留竞争期限与失效锁策略。Skill 核对仍确认两个缺口：阻塞的文件系统清理没有上限，retry 可能丢失伴随 body 失败的锁释放错误。Linux 测试验证已实现的行为，真实 Windows 与不支持 hard link 的文件系统仍未验证。
 
 ## 决定与证据
 
@@ -72,4 +72,27 @@ Catalog 修改直接组合 `withFileLock`，依赖环境暴露 FileLocks；删�
 
 三项评审修正扩展同一个行为套件：同一兼容 runtime 内改变环境默认目录（同时验证显式覆盖与 profile fallback），持续替换失效 generation 仍会超时且保留替换文件，确认消失后不经过 sleep 立即重试，以及回收崩溃遗留时保留活拥有者已发布/等待发布的候选与新鲜的无完整元数据目录。修复前其中三项回归失败；修复后完整 25 项文件锁测试通过，包括真实跨进程互斥。四项临时消融均被捕获：冻结环境默认目录、内容已变仍立即重试、确认消失后仍退避，以及跳过崩溃 scratch 清理。恢复源码后完整套件通过，实验脚本不提交；相关 CLI 消费路径 9 个套件和 129 项测试通过。测试使用真实文件和注入的 Clock/FileSystem 边界，不检查源码字符串或 mock 调用次数。
 
-修正验证：`pnpm check` 完成全仓类型检查与零错误的 type-aware lint，随后因此前已复现的 Roost signed-prefix 30 秒超时（`roost-session-backend-contract.test.ts`）中止；CLI 3659 项通过、1 项跳过。后续 workspace 和 Electron 全套测试未完成。所属文件锁套件与相关消费路径已单独通过。format、format:check、shared 源码格式检查、五项边界守卫和 docs check 通过；没有删覆盖或修改全局 Git 配置，注入的 Git、PATH 和临时目录污染只在验证子进程中隔离。这是 Linux 验证，不代表真实 Windows 或其它文件系统验证。
+合入 main 2e9482723e869fca7bea52fd5f036a37c53787e1 后的完整 stack 验证：`pnpm check` 完成全仓类型检查与零错误的 type-aware lint，随后因此前已复现的 Roost signed-prefix 30 秒超时中止；CLI 3748 项通过、1 项跳过。补验 Shared 112 个文件 / 1407 项、Electron 215 项通过；共享相关套件 127 项、七个 CLI 消费套件 99 项通过。format、format:check、shared 源码格式检查、五项边界守卫、开始的 docs status 与最终 docs check 通过。Effect 仍固定为 4.0.2，使用 main 锁定的 Loro 0.22.0。没有删覆盖或修改全局 Git 配置，注入的 Git、PATH、锁目录和临时目录污染只在验证子进程中隔离。这是 Linux 验证，不代表真实 Windows/macOS、其它文件系统、委派 cgroup、打包安装或生产验证。
+
+## 尚未有界的文件系统清理
+
+按 main 上的 Effect skill 核对，确认仍有一个生命周期限制：锁释放、候选目录
+删除与 Layer 恢复直接等待文件系统 I/O，没有独立的清理期限。临时实验使用
+真实文件，以 Deferred 阻塞注入的 remove；推进十分钟 TestClock 后，持有者
+及等待它中断完成的调用方仍未结束。放开删除后，清理完成且没有遗留文件。
+实验不进入产品代码。竞争 timeout 不覆盖这些等待；现有立即返回释放失败的
+测试不能证明 I/O 永不结束时仍能有界关停。
+
+后续应保留原始的进行中清理操作及其拥有者，为调用方的等待设置期限，在确认
+实际完成前继续阻止该锁代被复用。仅让 unlink 可中断并加 timeout 不安全：
+本地等待者取消不能证明底层 OS 删除已停止；迟到的 unlink 可能删掉同一路径
+上的下一代锁。这里只记录改进提案，合入 main 更新没有实现这项改动。
+
+第二个真实文件实验发现独立的失败路径缺口：body 失败且删锁返回
+PermissionDenied 时，锁仍被保留，但原生结果只剩 body 的失败。固定的
+4.0.2 中，外层 Effect.retry 在 Cause 全为 Fail 时选择第一个错误；
+Schedule 停止后重新抛出该错误，丢掉同时发生的释放失败。后续应只对获取
+阶段的单一 LockBusy 重试，把 body 和释放放在 retry 外。Legacy 投影也应
+保留主错误与锁清理失败，目前它只专门保留进程恢复租约。临时实验要求完整
+Cause 的断言失败；删除恢复可用后，后续请求仍能完成恢复。这里没有宣称
+已经修复产品代码。
