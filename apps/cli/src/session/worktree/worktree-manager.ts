@@ -1,5 +1,5 @@
 import { Context, Effect, Exit } from 'effect';
-import { squashProcessFailure } from '@lody/shared/node/process';
+import { squashFileLockFailure } from '@lody/shared/node/file-lock';
 import { GITHUB_CREDENTIAL_ENV_KEYS } from '@/lib/gh-token-env';
 import { RepoId, SessionId } from '@lody/shared';
 import { localProjectsLegacy } from '@lody/shared/node/local-project';
@@ -1391,7 +1391,7 @@ export class WorktreeManager {
       .runPromise(Effect.exit(program))
       .then((exit) => {
         if (Exit.isSuccess(exit)) return exit.value;
-        const primary = squashProcessFailure(exit.cause);
+        const primary = squashFileLockFailure(exit.cause);
         const releases = exit.cause.reasons.flatMap((reason) =>
           reason._tag === 'Die' && reason.defect instanceof LocalWorktreeScratchReleaseFailed
             ? [reason.defect]

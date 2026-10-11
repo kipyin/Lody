@@ -43,6 +43,9 @@ Exit；进程失败保留共享投影，临时目录释放 defect 与主错误�
 现在只组合查询并委派同一执行器。原生变更拥有者获得服务后删除这些 helper；
 worktreeGitLegacy 仍支撑未迁移的 Git 序列。本单元没有删除公共进程 Legacy 导出。
 
+runWorktreeLegacy 现在使用叠加进程感知投影的 squashFileLockFailure，
+把全部文件/进程恢复租约与准备临时目录错误一起保留。
+
 ## 验证和限制
 
 九项原生拥有权行为覆盖注入 Clock、部分写入失败、发布前中断、发布竞争、释放失败、

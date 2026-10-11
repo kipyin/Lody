@@ -95,6 +95,9 @@ record: [process tree layer](../../../../.agents/notes/implemented/architecture/
   candidates and giving unidentified preparation a 30-minute grace period. Decision and limits:
   [file lock lifecycle](../../../../.agents/notes/implemented/architecture/2026-10-10-effect-file-lock-lifecycle.md).
 
-The file-lock Legacy native-program boundary uses `squashProcessFailure` to retain
-process recovery leases alongside a body failure. Never discard them with a plain
-Cause projection.
+- Bound each release wait independently (5 seconds), retain and join the original
+  pending OS deletion, and block replacement until actual completion. A timeout
+  never proves unlink stopped. Only settled failures permit a new deletion attempt.
+- Retry acquisition only; body/release failures preserve the full Cause. Use
+  `squashFileLockFailure` at Legacy boundaries to retain every lock cleanup owner
+  alongside process leases and the original operation failure.

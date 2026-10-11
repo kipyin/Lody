@@ -1,3 +1,4 @@
+import { FileLockCleanupFailed, LockReleaseFailed } from '@lody/shared/node/file-lock';
 import { Effect } from 'effect';
 import {
   ProcessCleanupFailed,
@@ -65,7 +66,9 @@ export function rethrowWorktreeGitInfrastructureFailure(error: unknown): void {
     if (
       current instanceof WorktreeGitExecutionFailed ||
       current instanceof ProcessCleanupFailed ||
-      current instanceof ProcessReleaseFailed
+      current instanceof ProcessReleaseFailed ||
+      current instanceof FileLockCleanupFailed ||
+      current instanceof LockReleaseFailed
     )
       throw error;
     current = (current as { cause?: unknown }).cause;

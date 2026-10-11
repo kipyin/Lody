@@ -1,3 +1,11 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import {
+  FileLockCleanupFailed,
+  LockReleaseFailed,
+  squashFileLockFailure,
+} from '@lody/shared/node/file-lock';
 import { describe, expect, it } from 'vitest';
 import { it as effectIt } from '@effect/vitest';
 import {
@@ -332,6 +340,42 @@ describe('worktree Git execution boundary', () => {
       )
     ).rejects.toBeInstanceOf(WorktreeGitExecutionFailed);
   });
+  it('preserves a retained file lock through the Promise fallback boundary so its caller can recover', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lody-git-lock-failure-'));
+    const lockPath = path.join(directory, 'repo.lock');
+    fs.writeFileSync(lockPath, 'synthetic retained lock');
+    const primary = new Error('repository query failed');
+    const release = new LockReleaseFailed({
+      path: lockPath,
+      cause: 'synthetic permission denial',
+      cleanup: { path: lockPath, retryCleanup: Effect.sync(() => fs.unlinkSync(lockPath)) },
+    });
+    const projected = squashFileLockFailure(
+      Cause.combine(Cause.fail(primary), Cause.fail(release))
+    );
+    let fallback = false;
+    try {
+      let retained: unknown;
+      try {
+        rethrowWorktreeGitInfrastructureFailure(projected);
+        fallback = true;
+      } catch (error) {
+        retained = error;
+      }
+      expect(fallback).toBe(false);
+      expect(retained).toBeInstanceOf(FileLockCleanupFailed);
+      if (!(retained instanceof FileLockCleanupFailed)) throw new Error('missing lock owner');
+      expect(retained.cause).toBe(primary);
+      expect(fs.existsSync(lockPath)).toBe(true);
+      const cleanup = retained.releases[0]?.cleanup;
+      if (!cleanup) throw new Error('missing recoverable lock');
+      await Effect.runPromise(cleanup.retryCleanup);
+      expect(fs.existsSync(lockPath)).toBe(false);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('only infrastructure failure is excluded from Promise domain fallbacks', () => {
     const transport = new WorktreeGitExecutionFailed({
       message: 'git unavailable',
