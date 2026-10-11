@@ -11,7 +11,7 @@ export const LODY_OPERATION_MIN_DEADLINE_SECONDS = 60;
 export const LODY_OPERATION_MAX_DEADLINE_SECONDS = 604_800;
 export const LODY_OPERATION_COMMAND_MAX_BYTES = 256 * 1024;
 export const LODY_OPERATION_COMPLETION_MAX_BYTES = 64 * 1024;
-export const LODY_MAX_CHAIN_DEPTH = 32;
+export const LODY_MAX_CHAIN_DEPTH = 16;
 
 export const LodyOperationIdSchema = z
   .string()
@@ -283,6 +283,7 @@ export type OperationCompletionContent = {
     status: 'not_started' | 'uncertain';
     reason: {
       code:
+        | 'COLLABORATION_STOPPED'
         | 'CONFIGURATION_UNAVAILABLE'
         | 'DELIVERY_ATTEMPTS_EXHAUSTED'
         | 'DELIVERY_EXECUTION_UNCERTAIN';

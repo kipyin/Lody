@@ -17,7 +17,7 @@ this page is the full text of the rules summarised there.
   different order in `session-info-bar.tsx` for choosing which item opens on the
   stage (context first, as the most informative default) — that is stage
   preference, not cluster order, and the two are not meant to match. Stage = the rightmost item.
-  The bar hides only when items, execution-machine identity and ambient sync are
+  The bar hides only when items, actions, private-access status and ambient sync are
   all absent. With items, EXACTLY one is always expanded on the stage (there is no
   fully-collapsed state, and the stage never empties). Click semantics
   (researched; do not overload a second click): cluster chip = promote onto
@@ -189,12 +189,18 @@ highlighted. Tab pills navigate with root + exact tab ids. The page reads only
 a boolean (`useHasSessionRelations`); the chip builds the tree in the leaf.
 Decision: [relations note](../notes/implemented/feature/2026-09-24-session-relations-chip.md).
 
-## Execution-machine identity (review patch)
+The tree header provides **Stop all conversation collaboration**, with a nested
+confirmation popover and Cancel/Confirm actions. The user-owned stop flag is
+persisted across the authoritative tree (including hidden descendants); the root
+is stopped first and restored last. All participating machines must advertise
+`sessionCollaborationControl`. Runtime entry and MCP delegation check inherited
+flags, active turns are canceled, and late completions are recorded without waking
+the requester. **Restore collaboration** explicitly removes the barrier. Offline
+machines act after metadata sync; this is not an instantaneous cross-machine stop.
+The scope follows creation/containment edges, not every unrelated session that
+has exchanged a message. See the [decision](../notes/implemented/feature/2026-10-11-stop-conversation-tree.md).
 
-The optional `executionMachine` identity stays outside cluster/stage selection.
-It resolves `sessionMachine.ownerUserId` against existing workspace members,
-never Session ownership. The owner avatar/name and machine name remain visible
-when context/status changes; below a 600px bar width the controls move beneath it.
-Unknown ownership is explicit, and absence of machine metadata does not synthesize
-an identity. See the [draft Spec](../../specs/composer-machine-owner.md) and
-[review decision](../notes/proposed/feature/2026-10-07-composer-machine-owner.md).
+
+Execution-machine owner/name labels were removed at the user’s request. The bar
+uses its original single-row cluster/stage layout; see the
+[revert decision](../notes/implemented/simplification/2026-10-11-revert-composer-machine-owner.md).
