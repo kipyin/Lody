@@ -8,18 +8,33 @@
  */
 import { userInfo } from 'node:os';
 
-import { Cause, Clock, Context, Duration, Effect, Layer, Option } from 'effect';
+import {
+  Cause,
+  Clock,
+  Context,
+  Data,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+  Ref,
+  Scope,
+  Semaphore,
+} from 'effect';
 import { ChildProcessSpawner } from 'effect/process';
 
 import {
   CommandTimedOut,
+  ProcessReleaseFailed,
   READ_ONLY_ABANDON_POLICY,
   CommandFailed,
   SpawnFailed,
   errnoCode,
   processLayer,
   runCommandOk,
-  runPromiseSquashedLegacy,
   type RunCommandError,
   type ProcessFacadeOptions,
 } from './process';
@@ -198,15 +213,145 @@ export const loginShellEnvLayer = (options: ProcessFacadeOptions = {}) =>
     Layer.provideMerge(Layer.merge(LoginShellHostLive, processLayer(options)))
   );
 
-export interface LoginShellEnvLegacyOptions extends LoginShellEnvOptions {
-  readonly processOptions?: ProcessFacadeOptions;
-}
+export class LoginShellCacheClosed extends Data.TaggedError('LoginShellCacheClosed') {}
+export class LoginShellCacheShutdownFailed extends Data.TaggedError(
+  'LoginShellCacheShutdownFailed'
+)<{
+  cause: Cause.Cause<unknown>;
+  releases: ReadonlyArray<ProcessReleaseFailed>;
+}> {}
+type ProbeError = RunCommandError | CommandFailed;
+export const LoginShellCacheReporter = Context.Reference<
+  (cause: Cause.Cause<ProbeError>) => Effect.Effect<void>
+>('lody/LoginShellCacheReporter', { defaultValue: () => () => Effect.void });
+export class LoginShellCache extends Context.Service<
+  LoginShellCache,
+  {
+    readonly get: (
+      wait?: Duration.Input
+    ) => Effect.Effect<NodeJS.ProcessEnv | null, ProbeError | LoginShellCacheClosed>;
+    readonly peek: Effect.Effect<NodeJS.ProcessEnv | null, ProbeError | LoginShellCacheClosed>;
+    readonly warmup: Effect.Effect<void, LoginShellCacheClosed>;
+    readonly shutdown: Effect.Effect<void, LoginShellCacheShutdownFailed>;
+  }
+>()('lody/LoginShellCache') {}
 
-/** @deprecated Only for the unmigrated CLI/Electron cache owners; delete after both migrate. */
-export const probeLoginShellEnvLegacy = (
-  options: LoginShellEnvLegacyOptions = {}
-): Promise<NodeJS.ProcessEnv | null> =>
-  runPromiseSquashedLegacy(
-    probeLoginShellEnv(options).pipe(Effect.provide(loginShellEnvLayer(options.processOptions))),
-    { signal: options.processOptions?.signal }
+/** Application-owned single probe. Cancelling a reader never cancels its siblings. */
+export const LoginShellCacheLive = Layer.effect(
+  LoginShellCache,
+  Effect.gen(function* () {
+    const source = yield* LoginShellEnvironment;
+    const report = yield* LoginShellCacheReporter;
+    const owner = yield* Scope.fork(yield* Effect.scope);
+    const serial = yield* Semaphore.make(1);
+    const probe = yield* Ref.make<Fiber.Fiber<NodeJS.ProcessEnv | null, ProbeError> | undefined>(
+      undefined
+    );
+    const closed = yield* Ref.make(false);
+    const receipt = yield* Ref.make<
+      Deferred.Deferred<void, LoginShellCacheShutdownFailed> | undefined
+    >(undefined);
+    const start = serial
+      .withPermit(
+        Effect.gen(function* () {
+          if (yield* Ref.get(closed)) return yield* Effect.fail(new LoginShellCacheClosed());
+          const existing = yield* Ref.get(probe);
+          if (existing) return existing;
+          const fiber = yield* Effect.forkIn(
+            source.probe().pipe(
+              Effect.interruptible,
+              Effect.tapCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.void
+                  : report(cause).pipe(Effect.catchCause(() => Effect.void))
+              )
+            ),
+            owner
+          );
+          yield* Ref.set(probe, fiber);
+          return fiber;
+        })
+      )
+      .pipe(Effect.uninterruptible);
+    const shutdown = Effect.uninterruptible(
+      Effect.gen(function* () {
+        const claim = yield* serial.withPermit(
+          Effect.gen(function* () {
+            const existing = yield* Ref.get(receipt);
+            if (existing) return { first: false, done: existing };
+            const done = yield* Deferred.make<void, LoginShellCacheShutdownFailed>();
+            yield* Ref.set(receipt, done);
+            yield* Ref.set(closed, true);
+            return { first: true, done };
+          })
+        );
+        if (!claim.first) return yield* Deferred.await(claim.done);
+        const result = yield* Effect.gen(function* () {
+          const fiber = yield* Ref.get(probe);
+          // Interrupt first: runCommand's process Scope terminates the shell before
+          // joining its result. Do not close/join a blocked producer before this step.
+          if (fiber) yield* Fiber.interrupt(fiber);
+          const exit = fiber ? yield* Fiber.await(fiber) : Exit.succeed(null);
+          const closing = yield* Scope.close(owner, Exit.void).pipe(Effect.exit);
+          const causes: Cause.Cause<unknown>[] = [];
+          if (Exit.isFailure(exit)) {
+            const releases = exit.cause.reasons.flatMap((r) =>
+              Cause.isDieReason(r) && r.defect instanceof ProcessReleaseFailed ? [r.defect] : []
+            );
+            if (releases.length > 0) causes.push(exit.cause);
+          }
+          if (Exit.isFailure(closing)) causes.push(closing.cause);
+          if (causes.length > 0) {
+            const cause = causes.reduce(Cause.combine);
+            return yield* Effect.fail(
+              new LoginShellCacheShutdownFailed({
+                cause,
+                releases: cause.reasons.flatMap((r) =>
+                  Cause.isDieReason(r) && r.defect instanceof ProcessReleaseFailed ? [r.defect] : []
+                ),
+              })
+            );
+          }
+          return undefined;
+        }).pipe(Effect.exit);
+        yield* Deferred.done(claim.done, result);
+        return yield* result;
+      })
+    );
+    yield* Effect.addFinalizer(() =>
+      shutdown.pipe(Effect.catchCause((cause) => Effect.die(Cause.squash(cause))))
+    );
+    return LoginShellCache.of({
+      warmup: start.pipe(Effect.asVoid),
+      peek: start.pipe(Effect.flatMap((fiber) => fiber.pollUnsafe() ?? Effect.succeed(null))),
+      get: (wait) =>
+        start.pipe(
+          Effect.flatMap((fiber) => {
+            const result = Fiber.await(fiber).pipe(Effect.flatten);
+            return wait === undefined
+              ? result
+              : result.pipe(
+                  Effect.timeoutOrElse({ duration: wait, orElse: () => Effect.succeed(null) })
+                );
+          })
+        ),
+      shutdown,
+    });
+  })
+);
+
+/** Retry transferred process owners after the application's Scope has closed. */
+export const recoverLoginShellCacheShutdown = (
+  cause: Cause.Cause<unknown>
+): Effect.Effect<void, unknown> => {
+  const failed = cause.reasons.flatMap((r) =>
+    Cause.isDieReason(r) && r.defect instanceof LoginShellCacheShutdownFailed ? [r.defect] : []
   );
+  if (failed.length !== cause.reasons.length || failed.some((error) => error.releases.length === 0))
+    return Effect.failCause(cause);
+  return Effect.forEach(
+    failed.flatMap((error) => error.releases),
+    (release) => release.retryTermination(),
+    { discard: true }
+  );
+};

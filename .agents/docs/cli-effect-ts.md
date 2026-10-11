@@ -66,16 +66,31 @@ catch })` and pass the signal on, so interruption aborts the work.
   `onSpawned` hook). A listener attached after a fiber yield can miss an event
   that already fired.
 
-## Login-shell probes and pending compatibility caches
+## Login-shell probes and application-owned cache
 
-`LoginShellEnvironment` captures `LoginShellHost` and the official process service
-through a passive Layer. Native `probeLoginShellEnv` composes the existing scoped
-command API; `probeLoginShellEnvLegacy` is the single execution facade for the
-remaining CLI/Electron caches. Timeout and release failures propagate with their
-recovery owners. CLI cache accessors and Electron's getter carry visible Legacy
-names. Their process-lifetime Promise/timer cache ownership is still pending; the
-CLI three-second local wait only bounds that reader while probing continues.
-See the [decision and limits](../notes/implemented/architecture/2026-10-10-effect-login-shell-probe.md).
+`LoginShellEnvironmentLive` injects host selection and the existing official
+process service. Candidate shells share one Clock deadline; core composition
+never executes. `LoginShellCacheLive` owns one producer in a child Scope and
+retains its complete Exit for later readers. CLI readers retain their 3-second
+pending-overlay behavior; cancellation and timeout affect only that local reader.
+Application shutdown rejects new readers, interrupts and joins the producer, then
+closes its child Scope. Process cleanup keeps its own bounded backend and recovery
+leases. There is no Promise cache, cache timer or independent shell-probe runner.
+
+CLI index and Electron startApplication each compose the application's first
+long-lived native service through makeApplicationRuntime. Concurrent disposal joins
+one receipt; failed disposal retains the original ownership Cause across failed
+recovery attempts. Replacement is allowed only after release is confirmed.
+CLI graceful/one-shot/fatal exits await that owner; failed graceful cleanup exits
+with a failure code. Electron stops it inside the existing quit barrier after
+renderer unload approval, and a later quit retries unresolved resources.
+Remaining launchers use the visible getLoginShellEnvLegacy,
+getCachedLoginShellEnvSyncLegacy and getUserShellEnvCachedLegacy accessors.
+probeLoginShellEnvLegacy and the test-only reset facade are deleted. Remove the
+remaining accessors/binding bridge once launchers receive LoginShellCache directly.
+This first application runtime does not migrate the remaining Session/Turn/Loro
+owners or establish end-to-end daemon shutdown. See the
+[decision and limits](../notes/implemented/architecture/2026-10-10-effect-login-shell-probe.md).
 
 ## Process service and resource ownership
 

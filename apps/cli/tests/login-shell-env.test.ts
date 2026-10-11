@@ -1,95 +1,118 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-// Mock the underlying probe so we can drive its timing deterministically. The
-// opt-out test never reaches it (shouldSkip short-circuits), so the default
-// vi.fn() is harmless there.
-vi.mock('@lody/shared/node/login-shell-env', () => ({ probeLoginShellEnvLegacy: vi.fn() }));
-
-import { probeLoginShellEnvLegacy } from '@lody/shared/node/login-shell-env';
-
+import { Cause, Effect, Layer } from 'effect';
+import { makeApplicationRuntime } from '@lody/shared/node/application-runtime';
+import { LoginShellCacheLive, LoginShellEnvironment } from '@lody/shared/node/login-shell-env';
 import {
+  bindLoginShellCacheLegacy,
+  closeLoginShellApplicationLegacy,
   getCachedLoginShellEnvSyncLegacy,
   getLoginShellEnvLegacy,
-  resetLoginShellEnvCacheLegacy,
 } from '../src/agent/login-shell-env';
 
-describe('login-shell-env opt-out', () => {
-  afterEach(() => {
+const bind = (probe: Effect.Effect<NodeJS.ProcessEnv | null>) => {
+  const owner = makeApplicationRuntime(
+    LoginShellCacheLive.pipe(
+      Layer.provide(
+        Layer.succeed(LoginShellEnvironment, {
+          probe: () => probe,
+        })
+      )
+    ),
+    { recover: Effect.failCause, project: Cause.squash }
+  );
+  bindLoginShellCacheLegacy(owner);
+  return owner;
+};
+
+describe('application-owned login shell launcher boundary', () => {
+  beforeEach(() => {
     delete process.env.LODY_DISABLE_SHELL_ENV;
-    resetLoginShellEnvCacheLegacy();
+  });
+  afterEach(async () => {
+    await closeLoginShellApplicationLegacy();
+    delete process.env.LODY_DISABLE_SHELL_ENV;
+    vi.useRealTimers();
   });
 
-  it('LODY_DISABLE_SHELL_ENV=1 yields an empty overlay without spawning a shell', async () => {
+  it('disabled probing yields an empty overlay without requiring an owner', async () => {
     process.env.LODY_DISABLE_SHELL_ENV = '1';
-
-    // Both accessors must short-circuit to {} so the withDefaultAcpPathEntries
-    // fallback is the only thing that touches PATH when the user opts out.
     expect(getCachedLoginShellEnvSyncLegacy()).toEqual({});
     await expect(getLoginShellEnvLegacy()).resolves.toEqual({});
   });
-});
 
-describe('login-shell-env slow-probe recovery', () => {
-  beforeEach(() => {
-    delete process.env.LODY_DISABLE_SHELL_ENV;
-    resetLoginShellEnvCacheLegacy();
-    vi.mocked(probeLoginShellEnvLegacy).mockReset();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    resetLoginShellEnvCacheLegacy();
-  });
-
-  it('serves the real env to later awaiters once a slow probe lands after the timeout', async () => {
+  it('a cold synchronous read starts the owned probe and both readers receive its late result', async () => {
     vi.useFakeTimers();
-    let resolveProbe!: (env: NodeJS.ProcessEnv | null) => void;
-    vi.mocked(probeLoginShellEnvLegacy).mockReturnValue(
-      new Promise<NodeJS.ProcessEnv | null>((resolve) => {
-        resolveProbe = resolve;
-      })
-    );
-
-    // First awaiter kicks off the probe + the 3s timeout; the timeout wins so the
-    // early caller gets the empty overlay (and falls back to default PATH dirs).
-    const firstAwait = getLoginShellEnvLegacy();
+    const result = Promise.withResolvers<NodeJS.ProcessEnv>();
+    bind(Effect.promise(() => result.promise));
+    expect(getCachedLoginShellEnvSyncLegacy()).toEqual({});
+    const first = getLoginShellEnvLegacy();
     await vi.advanceTimersByTimeAsync(3000);
-    await expect(firstAwait).resolves.toEqual({});
-
-    // The slow profile finally lands.
-    resolveProbe({ PATH: '/opt/homebrew/bin' });
-    await vi.runAllTimersAsync();
-
-    // The memoized promise must now serve the real env — otherwise async callers
-    // (acp-runner aux sessions, history-sync) would be stuck on {} for the whole
-    // process while the sync accessor recovered, a permanent disagreement.
-    expect(getCachedLoginShellEnvSyncLegacy()).toEqual({ PATH: '/opt/homebrew/bin' });
-    await expect(getLoginShellEnvLegacy()).resolves.toEqual({ PATH: '/opt/homebrew/bin' });
+    await expect(first).resolves.toEqual({});
+    const env = { PATH: '/profile/bin' };
+    result.resolve(env);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getCachedLoginShellEnvSyncLegacy()).toBe(env);
+    await expect(getLoginShellEnvLegacy()).resolves.toBe(env);
   });
 
-  it('retains an early failed probe for both synchronous and asynchronous launchers', async () => {
+  it('an early failed probe remains visible to synchronous and asynchronous launchers', async () => {
     const failure = new Error('shell cleanup failed');
-    vi.mocked(probeLoginShellEnvLegacy).mockRejectedValue(failure);
+    bind(Effect.die(failure));
     await expect(getLoginShellEnvLegacy()).rejects.toBe(failure);
     expect(() => getCachedLoginShellEnvSyncLegacy()).toThrow(failure);
     await expect(getLoginShellEnvLegacy()).rejects.toBe(failure);
   });
 
-  it('retains a late failure after a pending caller has used the three-second empty overlay', async () => {
+  it('a late failure replaces the pending empty overlay and a closed generation cannot supply a new one', async () => {
     vi.useFakeTimers();
-    let rejectProbe!: (error: unknown) => void;
-    vi.mocked(probeLoginShellEnvLegacy).mockReturnValue(
-      new Promise((_resolve, reject) => {
-        rejectProbe = reject;
-      })
-    );
+    const result = Promise.withResolvers<NodeJS.ProcessEnv>();
+    const owner = bind(Effect.promise(() => result.promise));
     const early = getLoginShellEnvLegacy();
     await vi.advanceTimersByTimeAsync(3000);
     await expect(early).resolves.toEqual({});
-    const failure = Object.assign(new Error('unreleased shell'), { recoveryOwner: { pid: 123 } });
-    rejectProbe(failure);
-    await vi.runAllTimersAsync();
+    const failure = new Error('unreleased shell');
+    result.reject(failure);
+    await vi.advanceTimersByTimeAsync(0);
     expect(() => getCachedLoginShellEnvSyncLegacy()).toThrow(failure);
     await expect(getLoginShellEnvLegacy()).rejects.toBe(failure);
+    await owner.closeLegacy();
+    bind(Effect.succeed({ PATH: '/next-generation/bin' }));
+    const next = getLoginShellEnvLegacy();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(next).resolves.toEqual({ PATH: '/next-generation/bin' });
+  });
+
+  it('application close waits for pending producer cleanup and rejects new launchers', async () => {
+    const started = Promise.withResolvers<void>();
+    const cleaning = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let held = false;
+    bind(
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          held = true;
+        }),
+        () => Effect.sync(() => started.resolve()).pipe(Effect.andThen(Effect.never)),
+        () =>
+          Effect.sync(() => cleaning.resolve()).pipe(
+            Effect.andThen(Effect.promise(() => release.promise)),
+            Effect.andThen(
+              Effect.sync(() => {
+                held = false;
+              })
+            )
+          )
+      )
+    );
+    getCachedLoginShellEnvSyncLegacy();
+    await started.promise;
+    const closing = closeLoginShellApplicationLegacy();
+    await cleaning.promise;
+    expect(held).toBe(true);
+    expect(() => bind(Effect.succeed({ PATH: '/unsafe-replacement' }))).toThrow('already bound');
+    await expect(getLoginShellEnvLegacy()).rejects.toMatchObject({ _tag: 'LoginShellCacheClosed' });
+    release.resolve();
+    await closing;
+    expect(held).toBe(false);
   });
 });

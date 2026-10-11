@@ -233,7 +233,7 @@ File locks are the first subsequent dependency unit; see the
 [file-lock decision](../../implemented/architecture/2026-10-10-effect-file-lock-lifecycle.md).
 They supply a real filesystem protocol, fair interruptible local admission and
 observable cleanup failures. LocalProjects and WorktreeGit execution have native
-kernels under draft review; worktree mutation/setup/GC, login-shell application-cache ownership, managed
+kernels under draft review; worktree mutation/setup/GC, managed
 runtime installation, startup gates, SDK requests, Sessions and Turns remain to
 migrate. Process unification does not finish those lifecycles or daemon ownership.
 
@@ -397,7 +397,7 @@ flowchart TD
   G --> J
   F --> R["Runtime download / installation"]
   C --> E["Native login-shell probe: #1397"]
-  E --> EC["Application shell-cache ownership: pending"]
+  E --> EC["Application shell-cache ownership: #1397"]
   P --> SG["ACP start gate: pending"]
   P --> A["Independent ACP transport → domain operations"]
   J --> S["AgentSession / session pool"]
@@ -470,13 +470,14 @@ setup/GC or Session cancellation are complete.
 
 The independent [login-shell probe unit](../../implemented/architecture/2026-10-10-effect-login-shell-probe.md)
 depends on process release-failure ownership (#1379), not worktree preparation.
-Its finite probe is native; application caches remain Legacy until application
-runtime/root Scope ownership is introduced. Maintain both actual paths:
+Its finite probe and application-owned cache are native in #1397. CLI/Electron
+entries now own this service through their root runtime; remaining launchers use
+explicit Legacy accessors. This does not finish other daemon owners. Maintain both actual paths:
 
 ```mermaid
 flowchart LR
   P[Native process service + release ownership] --> S[Native login-shell probe]
-  S --> C[Application-owned shell cache: pending]
+  S --> C[Application-owned shell cache: #1397]
   P --> G[Git + filesystem/locks review units]
   G --> W[Worktree setup and GC: pending]
   C --> A[ACP startup composition: pending]

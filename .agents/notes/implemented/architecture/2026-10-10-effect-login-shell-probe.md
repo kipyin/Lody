@@ -1,4 +1,4 @@
-# Native login-shell environment probes
+# Native login-shell probe and application-owned cache
 
 Status: implemented
 Translation: current
@@ -8,112 +8,88 @@ PR: [#1397](https://github.com/LodyAI/Lody/pull/1397)
 
 ## Abstract
 
-The shared login-shell probe used a Promise loop around Legacy process execution
-and collapsed infrastructure, timeout and release failures into an absent environment.
-LoginShellEnvironment now composes the existing native command API through an injected
-host and official process service, with a shared Clock deadline for candidate shells.
-CLI and Electron consumers use one marked probe facade; their remaining caches are
-explicitly Legacy and retain failures rather than caching success. This finite probe
-migration does not establish application ownership of those background caches.
+The finite probe now composes the existing native process service, and CLI/Electron
+shared caches use one Effect kernel owned by their application Scope. Local waiters
+can time out or cancel without stopping siblings; application shutdown stops and
+joins the producer. Failed release preserves its process recovery owners and prevents
+successful quit/replacement until cleanup is confirmed. Remaining launcher APIs are
+explicit Legacy execution boundaries; Session/Turn/Loro lifecycle migration is pending.
 
-## Decision and responsibilities
+## Probe policy
 
-LoginShellHost supplies platform, environment snapshot and login-shell selection.
-LoginShellEnvironmentLive captures it and ChildProcessSpawner through Layer.effect;
-loginShellEnvLayer only composes those dependencies and the existing bounded Lody
-process backend. Native probeLoginShellEnv composes the service without execution.
-Each runCommandOk owns its command Scope. Cancellation propagates to that command
-and waits for tree/stdio cleanup; failed release retains the process recovery owner.
-There is no new spawn, stream collection or termination implementation.
+LoginShellHost supplies platform, environment snapshot and shell selection.
+LoginShellEnvironmentLive captures it with the official process spawner; passive
+loginShellEnvLayer reuses Lody's bounded backend. Each command owns its Scope.
+Candidate order, login/interactive argv, bashrc handling, delimiters, 8 MiB output
+limit and restoration of injected variables remain unchanged. Clock supplies the
+shared 15-second command budget across fallbacks, with a separate process-cleanup
+bound. Only a single completed CommandFailed or ENOENT permits fallback. Unsupported
+or absent shells return null; permission, stream, timeout and release errors retain
+the complete Cause. No new spawn, collector or termination backend is introduced.
 
-Candidate shells retain the existing user/default shell then zsh/bash order, login
-and interactive argv, bashrc handling, delimiters, 8 MiB output limit and restoration
-of probe-only environment variables from the invocation snapshot. Clock replaces
-Date.now and the total default command-wait budget remains 15 seconds across
-fallbacks. Process cleanup has its existing separate bounded wait, so the configured
-execution deadline is not a promise about total elapsed release time.
+## Cache and application ownership
 
-Only a single completed CommandFailed or absent candidate executable (ENOENT) permits
-fallback. An unsupported/absent environment after known candidates returns null;
-Windows returns null without evaluating a POSIX host environment. Permission/startup,
-stream/output-limit, timeout and release failures remain failures. Mixed Cause is
-re-emitted, never reduced to optional absence. This intentionally replaces silent
-fallback after infrastructure or cleanup failure with observable failure.
+LoginShellCacheLive uses Ref/Semaphore for one producer Fiber in an owned child Scope.
+It retains the producer Exit, not a Promise or timer. get/peek/warmup compose Effect;
+get's optional Clock timeout affects only its reader. CLI keeps the 3-second empty
+overlay while pending; later success or failure reaches both asynchronous and
+synchronous readers. A reporter records failures by safe error name without logging
+shell output or environment. Electron retains its full probe wait and opt-out/null
+behavior. Reader cancellation never marks the remote process released.
 
-probeLoginShellEnvLegacy is the only Promise door for this kernel. It forwards the
-entry signal and uses runPromiseSquashedLegacy to preserve all process leases.
-The old unmarked Promise probe name now denotes native Effect composition. CLI
-getLoginShellEnvLegacy / getCachedLoginShellEnvSyncLegacy and Electron
-getUserShellEnvCachedLegacy visibly identify the remaining Promise cache owners;
-no aliases hide Legacy in consumers. Delete the facade after those application
-owners receive the service, and delete the cache accessors after their consumers
-migrate to the application-owned shell cache.
+Shutdown closes admission, interrupts and joins the producer before closing its
+Scope, and shares a Deferred receipt across concurrent calls. Process-release
+failures become LoginShellCacheShutdownFailed with all transferred process leases.
+The application makeApplicationRuntime owner avoids relying on repeated Scope.close
+joining the first close: concurrent callers await one receipt. A failed completed
+close retries transferred leases, retaining the original Cause even if recovery
+also fails. Binding a replacement requires confirmed release of its predecessor.
 
-The CLI's existing three-second local wait ceiling is preserved: a caller may use
-an empty overlay while a probe is still pending, and successful late completion
-updates later readers. This is distinct from a failed probe. Early failure rejects;
-late failure replaces the cache with the same rejected error, is reported by safe
-error name, and is thrown by later synchronous reads. Logs contain no environment,
-profile output or raw error. Warm-up attaches a rejection observer because the
-cache itself records the failure. Electron already retains a rejected cache Promise
-and now receives the actual probe failure instead of null.
+CLI index and Electron startApplication compose these first application runtimes.
+CLI daemon shutdown retains session-stop/flush/document teardown inside fleet.shutdown,
+then closes the shell owner before releasing the host lease; fatal and one-shot
+entries also await disposal. Failed graceful cleanup cannot exit successfully.
+Electron's existing renderer-unload approval runs before teardown; its quit barrier
+waits for the CLI and native application owner and keeps failures available for a
+later quit. Startup failure also awaits application disposal before failure exit.
+The existing explicit force-exit policy remains; abrupt OS death cannot await Scope.
+These roots own this service, not the as-yet-unmigrated daemon Session/Turn/Loro stack.
 
-The remaining module Promise, timer and process-lifetime cache are not native
-lifecycle ownership. One pending CLI waiter does not cancel the shared cache, reset
-is a test-only compatibility operation, and daemon shutdown does not yet join that
-background probe. Do not claim unified ManagedRuntime/root Scope from this leaf.
+probeLoginShellEnvLegacy and resetLoginShellEnvCacheLegacy are deleted after their
+consumers migrate. Remaining launcher accessors and the application binding bridge
+carry visible Legacy names/@deprecated; remove them when callers receive the native
+service. The generic application close door is also explicitly closeLegacy while
+application orchestration remains Promise-based. No second probe/cache implementation
+or implicit lazy runtime is provided.
 
-## Evidence and validation
+## Evidence and limits
 
-Implementation uses the workspace-pinned Effect and @effect/vitest 4.0.2. The
-[official v4 service/layer migration](https://github.com/Effect-TS/effect/blob/main/migration/services.md)
-and [Clock service documentation](https://github.com/Effect-TS/effect/blob/main/packages/effect/src/Clock.ts)
-were checked against installed Context, Layer, Clock, TestClock and process sources.
-Native ownership tests use Deferred/TestClock and the existing in-memory OS table;
-real throwaway-home profiles retain login exports, multiline values and fallback.
-Actual CLI cache, Session env, ACP runner/authentication and history consumers are
-verified together: Shared probe/process suites pass 53 cases and five CLI
-consumer suites pass 74. Seven isolated ablations are caught: swallowed native
-failure, a reset fallback budget, wall-clock substitution, omitted probe-variable
-restoration, a mutable invocation environment, permission treated as optional,
-and failed cache entries turned into empty success. Restored native/cache suites
-pass eight/four cases; experiment scripts remain outside the repository.
+Implementation follows the installed Effect/@effect-vitest 4.0.2 Context, Layer,
+Scope, Fiber, ManagedRuntime and TestClock sources plus the owning Effect skill.
+Real throwaway profiles and the existing fake OS table cover probe behavior, tree
+cleanup and retained process leases. New behavioral coverage checks reader timeout
+and cancellation, late results/failures, concurrent cleanup, refused new requests,
+real process descendants, failed disposal and repeated recovery, cold synchronous
+access, replacement refusal, daemon failure exit and Electron quit/retry ordering.
+Experiments and validation isolation live outside product code. No new Spec or
+migration PR is created. Local Linux checks do not establish macOS/Windows login,
+Windows root-exit descendant ownership, delegated cgroups, packaging or production.
+[Process ownership](2026-09-27-effect-process-tree-layer.md) and
+[complete release failures](../bug-fix/2026-10-10-effect-process-release-failure.md)
+remain prerequisites; installers, startup gate, ACP/Session/Turn and Loro are separate units.
 
-Root pnpm check passes all workspace types and lint (zero errors), then CLI
-reports 3,721 passing, one skipped and one Roost signed-prefix timeout. The exact
-CLI and Shared baseline source (9692d13) with the same two-worker CLI/component
-load also reproduces that timeout; running the baseline case alone passes. The
-baseline preview additionally lacks root fixture files for its SQLite suite,
-which is a preview setup failure, not a product change. No full green pnpm check
-is claimed and no coverage is removed. Supplemental Shared passes 113 files /
-1,383 tests and Electron passes 215 tests; all i18n/import/platform/process/public
-guards pass. pnpm format, format:check, scoped source/test formatting, initial docs
-status and final docs check pass, with no protected topic changed. Validation
-child environments isolate Git pollution without changing user global config.
-
-Local Linux verification does not establish real Windows, macOS login behavior,
-delegated cgroups, packaging or production validation. The earlier
-[process-layer decision](2026-09-27-effect-process-tree-layer.md) owns the compatible
-profile and local-wait behavior; [release-failure ownership](../bug-fix/2026-10-10-effect-process-release-failure.md)
-is a prerequisite for reliable failure projection. Runtime installers, startup gate,
-connection/session ownership and native application caches remain separate units.
-
-The review branch now follows the seven-unit linear stack recorded in the original
-roadmap. Its GitHub base is #1394; the native probe still depends only on process
-capabilities. The base order does not turn worktree preparation into a shell
-requirement. Updated prerequisites include lossless acquisition failures from
-#1379. The cached application lifecycle remains explicitly Legacy.
-
-The restacked integration passes all workspace typechecks and zero-error lint;
-format, format:check, Shared formatter checks, all five boundary guards and docs
-check pass. Shared passes 112 files / 1405 cases and Electron passes 215 cases.
-The shell/process suites pass 56 cases; corrected-env marker/cache/session suites
-pass 20 cases. Earlier global LODY_DATA_DIR validation settings bypassed HOME
-fixtures, causing a stale speculative marker and an installation-profile mismatch.
-Those failures are reproduced with that setting and disappear after removing it;
-only a task-owned LODY_LOCKS_DIR is now supplied. No product or fixture is changed
-to suppress them. Full validation remains non-green: the recorded stack-wide CLI
-run has 3697 passes, one skip, the Roost signed-prefix timeout and the now-explained
-marker failure. The complete CLI suite was not repeated after environment repair.
-This does not establish Windows/macOS, delegated cgroups, packaging or production
-behavior. No further migration unit is published with this stack integration.
+Verification of the final assembled source against main 45753fe61e0427043f5cb14c91b33e996ca376b0:
+workspace typechecks and type-aware lint pass with zero errors. Full pnpm check
+reaches CLI testing: 3753 pass, one skip, and the previously reproduced Roost
+signed-prefix 30-second timeout; no full green check is claimed. Supplemental
+Shared passes 112 files / 1415 cases and Electron passes 216 cases. Eight related
+CLI suites pass 124 cases; the shared lock/shell/process suites pass 89 cases.
+Six temporary ablations are caught: removing the cleanup bound, reissuing an old
+successful unlink, dropping file cleanup Cause, cancelling the shared producer
+with a reader, discarding the original failed recovery owner, and declaring failed
+shell release successful. Original/restored lock and shell suites pass 28/18 cases.
+Scripts remain outside product code. Formatting, all five boundary guards and docs
+check pass. Validation children isolate Git/PATH/temp/lock inputs; global Git
+configuration, original checkout HEAD and dirty submodule gitlinks remain unchanged.
+During validation main advanced with unrelated changes; these fixes retain the
+explicit tested snapshot, not a claim of integration with that later head.

@@ -326,3 +326,10 @@ send a local project identity. See the [draft contract](../../../../specs/local-
 ### Startup model selection
 
 `SessionConfig.modelId` carries the driving Turn's choice through prepared and cold creation into `AgentClient`. Core's `_meta.lody.sessionConfig` includes it before new/load/resume/fork. Codex translates the model and reasoning into native startup configuration, so resume does not transiently use a different global model. Live configuration remains necessary for reused sessions and older adapters. See the [startup contract](../../../../specs/acp-startup-model.md).
+
+## Login-shell cache
+
+`login-shell-env.ts` contains only Legacy launcher/binding boundaries. CLI index owns
+the native LoginShellCache runtime and waits for its producer at daemon/command exit.
+
+[Ownership decision](../../../../.agents/notes/implemented/architecture/2026-10-10-effect-login-shell-probe.md).

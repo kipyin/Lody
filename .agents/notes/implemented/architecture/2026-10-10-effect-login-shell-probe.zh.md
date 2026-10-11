@@ -1,4 +1,4 @@
-# 原生登录 shell 环境探测
+# 原生登录 shell 探测与应用拥有的缓存
 
 Status: implemented
 Translation: current
@@ -8,71 +8,67 @@ PR: [#1397](https://github.com/LodyAI/Lody/pull/1397)
 
 ## 摘要
 
-共享登录 shell 探测此前用 Promise 循环执行 Legacy 进程入口，并将基础设施、超时及释放
-失败折叠为环境缺失。LoginShellEnvironment 现在通过注入的 host 和官方进程服务组合现有
-原生命令 API，候选 shell 共用 Clock 期限。CLI 与 Electron 经单一标记门面消费；剩余缓存
-显式命名 Legacy，并保留失败而非缓存成功。这一有限探测迁移不代表后台缓存已具备应用所有权。
+有限探测复用原生进程服务，CLI/Electron 共享缓存现在由应用 Scope 拥有的同一个
+Effect 内核管理。本地等待者可以超时或取消而不停止其他等待者；应用关停才停止并
+等待生产任务。释放失败保留进程恢复拥有者，确认清理前不能成功退出或替换。
+剩余启动器 API 显式标记为 Legacy 执行边界；Session、Turn 与 Loro 生命周期仍待迁移。
 
-## 决定与职责
+## 探测策略
 
-LoginShellHost 提供平台、环境快照与登录 shell 选择；LoginShellEnvironmentLive 通过
-Layer.effect 捕获它和 ChildProcessSpawner。loginShellEnvLayer 只组合依赖及现有 Lody
-有界进程后端；原生 probeLoginShellEnv 不执行程序。每次 runCommandOk 拥有命令 Scope；
-取消传入命令并等待树及 stdio 清理，释放失败保留进程恢复拥有者。不新增 spawn、输出收集
-或终止实现。
+LoginShellHost 提供平台、环境快照和 shell 选择；LoginShellEnvironmentLive 捕获它
+及官方进程 spawner，被动 loginShellEnvLayer 复用 Lody 有界后端。命令各自拥有 Scope。
+候选顺序、登录与交互参数、bashrc 处理、分隔符、8 MiB 输出限制和注入变量恢复保持不变。
+Clock 提供候选共用的 15 秒执行期限，进程释放另有上限。只有单独的已完成 CommandFailed
+或 ENOENT 可以回退；不支持或不存在的 shell 返回 null；权限、流、超时与释放错误保留
+完整 Cause。不引入第二套 spawn、输出收集或终止后端。
 
-保留用户/默认 shell 后尝试 zsh/bash 的顺序、login/interactive argv、bashrc 处理、
-delimiter、8 MiB 输出上限和从调用快照恢复探测专用环境变量。Clock 取代 Date.now，
-所有 fallback 共用默认 15 秒命令等待预算。进程释放有独立的既有有界等待，因此执行期限
-不代表释放所需总耗时也严格等于该期限。
+## 缓存与应用所有权
 
-只有单一已结束的 CommandFailed，或候选 executable 缺失 ENOENT 才允许 fallback。
-已知候选耗尽后的不支持/缺失环境返回 null；Windows 不求值 POSIX host 环境。权限、
-启动、stream/输出上限、超时和释放失败仍然失败，混合 Cause 原样传播，不变成可选缺失。
-此决定将基础设施或清理失败后的静默 fallback 改为可观察失败。
+LoginShellCacheLive 使用 Ref/Semaphore，在拥有的子 Scope 中启动唯一生产 Fiber。
+保留 Fiber 的 Exit，不使用 Promise 缓存或计时器。get、peek、warmup 组合 Effect；
+get 可选的 Clock 超时只影响当前读取者。CLI 保留等待三秒后暂用空环境的行为，迟到
+成功或失败都提供给后续同步与异步读取者。报告器只记录安全错误名称，不输出 shell
+内容或环境。Electron 保留完整探测等待和禁用/null 行为。本地取消不会宣告进程已释放。
 
-probeLoginShellEnvLegacy 是此内核唯一 Promise 门面，转发入口 signal 并通过
-runPromiseSquashedLegacy 保留全部进程租约。原来的无标记 Promise 名称现在表示原生
-Effect 组合。CLI getLoginShellEnvLegacy / getCachedLoginShellEnvSyncLegacy 与
-Electron getUserShellEnvCachedLegacy 显式表示尚存的 Promise 缓存拥有者；调用方不使用
-隐藏 Legacy 的别名。应用拥有者接入服务后删除探测门面；消费方迁到应用拥有的原生缓存后
-删除缓存入口。
+关停禁止新请求，先中断并等待生产任务，再关闭子 Scope；并发调用共享 Deferred 结果。
+进程释放失败生成 LoginShellCacheShutdownFailed，并携带全部恢复租约。应用
+makeApplicationRuntime 不依赖重复 Scope.close 等待第一次关闭：并发关闭者等待同一
+结果。已完成但失败的关闭会重试转交的租约；恢复仍失败时保留原始 Cause。只有确认
+前任已释放才允许绑定下一代。
 
-CLI 既有三秒本地等待上限保留：探测仍 pending 时，早期调用可用空 overlay；迟到的成功
-会更新后续读取。这与探测失败不同。早期失败拒绝；迟到失败以同一错误替换拒绝缓存，按安全
-错误名报告，并让后续同步读取抛出。日志不含环境、profile 输出或原始错误。预热附拒绝
-观察者，因为缓存自身记录失败。Electron 原本就保留拒绝 Promise，现在收到实际探测失败。
+CLI index 和 Electron startApplication 组合各自首个应用 runtime。CLI 的
+fleet.shutdown 内仍保持会话停止、最终写入 flush、文档拆除顺序，随后关闭 shell
+拥有者，再释放 host 租约；致命错误与一次性命令退出也等待释放。正常清理失败不能
+以成功码退出。Electron 仍先征得 renderer unload 同意，再拆除服务；退出屏障等待
+CLI 和原生应用拥有者，失败保留供下一次退出重试。初始化失败也先等待应用清理，
+再以失败退出。现有显式强制退出策略保留；操作系统突然终止不能等待 Scope。
+这些根只拥有此服务，不代表整个 Session、Turn 和 Loro daemon 已迁移。
 
-剩余模块 Promise、timer 和进程生命周期缓存还没有原生资源所有权。单个 CLI 等待者取消
-不代表取消共享缓存；reset 是测试兼容操作；daemon 关停尚未 join 后台探测。不能由这个
-叶子单元宣称统一 ManagedRuntime/根 Scope 已落实。
+调用方迁移后删除 probeLoginShellEnvLegacy 和 resetLoginShellEnvCacheLegacy。
+剩余启动器访问器及应用绑定桥保留 Legacy 名称和 @deprecated；调用方直接获取原生
+服务后删除。应用编排仍使用 Promise，所以应用关闭入口也显式叫 closeLegacy。
+不保留第二套探测/缓存实现，也不提供隐藏的惰性 runtime。
 
-## 证据与验证
+## 依据与边界
 
-实现使用仓库固定的 Effect 与 @effect/vitest 4.0.2；核对了
-[官方 v4 service/Layer 迁移文档](https://github.com/Effect-TS/effect/blob/main/migration/services.md)、
-[Clock 服务源码文档](https://github.com/Effect-TS/effect/blob/main/packages/effect/src/Clock.ts)
-及安装的 Context、Layer、Clock、TestClock、process 源码。原生测试使用 Deferred/TestClock
-与既有内存 OS 表；真实临时 HOME profile 保留登录导出、多行值与 fallback。实际 CLI 缓存、
-Session env、ACP runner/authentication 和 history 消费方一起验证：共享探测/进程套件
-53 项、五个 CLI 消费套件 74 项通过。七项隔离消融被捕获：吞掉原生失败、重置 fallback
-预算、替换墙上时钟、遗漏探测变量恢复、可变调用环境、将权限失败当可选缺失，以及缓存
-失败变空成功。恢复后的原生/缓存套件分别八项/四项通过；实验脚本不进入仓库。
+使用已安装的 Effect/@effect-vitest 4.0.2 Context、Layer、Scope、Fiber、ManagedRuntime、
+TestClock 源码及所属 Effect skill。真实临时 profile 和现有假 OS 表覆盖探测、进程树
+清理与失败租约。新增行为覆盖等待者超时/取消、迟到结果/失败、并发清理、拒绝新请求、
+真实进程服务的后代、失败关闭与重复恢复、首次同步读取、拒绝未释放代际替换、daemon
+失败退出码，以及 Electron 退出与重试顺序。实验和验证隔离位于产品代码之外。不新增
+Spec 或迁移 PR。本地 Linux 检查不代表 macOS/Windows 登录、Windows 根退出后的后代
+归属、委派 cgroup、打包或生产验证。
+[进程所有权](2026-09-27-effect-process-tree-layer.md) 与
+[完整释放失败](../bug-fix/2026-10-10-effect-process-release-failure.md)
+仍是前置依赖；安装、启动闸门、ACP、Session、Turn 和 Loro 是独立单元。
 
-根 pnpm check 的全工作区类型与 lint 通过（零错误），CLI 3721 项通过、一项跳过，
-唯一失败为 Roost signed-prefix 超时。使用精确 CLI/Shared 基线源码 9692d13、相同
-两 worker 的 CLI/component 并发负载也复现该超时；单独运行基线用例通过。基线预览
-另缺 SQLite 套件所需根 fixture 文件，属于预览配置问题，不是产品变化。不宣称完整
-pnpm check 绿灯，也没有删除覆盖。补跑 Shared（113 文件、1383 项）、Electron
-（215 项）及全部 i18n/import/platform/process/public 守卫通过。pnpm format、
-format:check、所属源码/测试格式、开始 docs status 与结束 docs check 通过，无保护
-主题改变。Git 污染仅在验证子进程隔离，不改用户全局配置。
-
-本地 Linux 验证不证明真实 Windows、macOS 登录环境、委派 cgroup、打包或生产行为。
-[进程层原决定](2026-09-27-effect-process-tree-layer.zh.md) 记录兼容 profile/本地等待行为；
-[释放失败所有权](../bug-fix/2026-10-10-effect-process-release-failure.zh.md) 是失败投影的
-前置依赖。安装器、启动闸门、连接/会话拥有者与原生应用缓存仍是独立单元。
-
-评审分支现遵循原路线图记录的七单元线性 stack，GitHub base 为 #1394；原生探测仍只依赖进程能力，评审顺序不把 worktree 准备变成 shell 依赖。更新的前置包含 #1379 对获取失败完整原因的保留；应用缓存生命周期仍明确为 Legacy。
-
-重新组成的 stack 通过全工作区类型检查及零错误 lint，format、format:check、额外 Shared 格式检查、全部五项边界守卫和 docs check 通过。Shared 112 个文件、1405 个用例及 Electron 215 个用例通过；shell/进程套件 56 个用例和修正环境后的 marker/缓存/Session 套件 20 个用例通过。此前验证统一设置 LODY_DATA_DIR，绕过 HOME fixture 隔离，造成旧 speculative marker 和 installation profile 不匹配；有该设置可复现，移除后消失。现在仅提供任务拥有的 LODY_LOCKS_DIR，没有修改产品或 fixture 压制失败。全仓验证仍非绿色：已记录的 stack CLI 3697 个通过、一个跳过，失败为 Roost signed-prefix 超时和现已解释的 marker 失败；修正环境后未重复完整 CLI。此验证不代表真实 Windows/macOS、委派 cgroup、打包或生产行为。本次 stack 整合未发布其他迁移单元。
+最终组合源码基于 main 45753fe61e0427043f5cb14c91b33e996ca376b0 验证：全仓类型检查与
+type-aware lint 通过、零错误。完整 pnpm check 进入 CLI 测试后有 3753 项通过、1 项跳过，
+剩下此前已复现的 Roost signed-prefix 30 秒超时，不宣称完整检查全绿。补验 Shared
+112 文件 / 1415 项、Electron 216 项通过；8 个相关 CLI 套件 124 项、共享锁/shell/进程
+套件 89 项通过。六项临时消融均被捕获：移除清理上限、重发已成功的旧 unlink、丢失文件
+清理 Cause、随等待者取消共享生产者、丢失首次失败恢复拥有者，以及把 shell 释放失败
+宣称成功。原始与恢复源码的锁/shell 套件分别通过 28/18 项；脚本不进产品代码。
+格式、五项边界守卫和 docs check 通过。Git/PATH/临时目录/锁目录隔离只在验证子进程中
+进行，不修改全局 Git、原工作区 HEAD 或 dirty 子模块 gitlink。验证期间主分支合入其它
+改动，本轮保留明确验证的快照，不宣称已集成之后的分支尖。

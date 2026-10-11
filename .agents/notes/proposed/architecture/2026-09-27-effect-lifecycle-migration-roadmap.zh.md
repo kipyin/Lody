@@ -157,7 +157,7 @@ CLI process-options 只组合 Layer，旧 promise-facade 已删除。Sandbox 失
 
 文件锁是之后第一个依赖单元，见[文件锁决定](../../implemented/architecture/2026-10-10-effect-file-lock-lifecycle.zh.md)：
 真实文件协议、公平且可取消的本地登记、可观察的清理失败。LocalProjects 和 WorktreeGit 执行已有待审的原生内核；worktree 变更/setup/GC、
-登录环境应用缓存所有权、runtime 安装、启动闸门、SDK 请求、Session 与 Turn 仍需迁移；进程统一
+runtime 安装、启动闸门、SDK 请求、Session 与 Turn 仍需迁移；进程统一
 不代表这些生命周期或 daemon 所有权已完成。
 
 ### L2 与 Loro 同步栈
@@ -274,7 +274,7 @@ flowchart TD
   G --> J
   F --> R["Runtime 下载 / 安装"]
   C --> E["原生登录 shell 探测：#1397"]
-  E --> EC["应用 shell 缓存所有权：待完成"]
+  E --> EC["应用 shell 缓存所有权：#1397"]
   P --> SG["ACP 启动闸门：待完成"]
   P --> A["可独立的 ACP transport → 领域操作"]
   J --> S["AgentSession / 会话池"]
@@ -324,13 +324,14 @@ flowchart TD
 单元，不宣称 mutations、setup/GC 或 Session 取消已完成。
 
 独立的[登录 shell 探测单元](../../implemented/architecture/2026-10-10-effect-login-shell-probe.zh.md)
-依赖进程释放失败所有权 #1379，不依赖 worktree 准备。有限探测已原生化；应用缓存在
-应用 runtime/根 Scope 落实前仍是 Legacy。维护两个真实路径：
+依赖进程释放失败所有权 #1379，不依赖 worktree 准备。#1397 已原生化有限探测与
+应用缓存；CLI/Electron 入口通过根 runtime 拥有此服务，剩余启动器使用显式 Legacy
+访问器，不代表其它 daemon 拥有者已迁移。维护两个真实路径：
 
 ```mermaid
 flowchart LR
   P[原生进程服务与释放所有权] --> S[原生登录 shell 探测]
-  S --> C[应用拥有的 shell 缓存：待完成]
+  S --> C[应用拥有的 shell 缓存：#1397]
   P --> G[Git 与文件系统/锁评审单元]
   G --> W[worktree setup 和 GC：待完成]
   C --> A[ACP 启动组合：待完成]

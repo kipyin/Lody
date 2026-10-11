@@ -11,10 +11,6 @@ const resolvedLoginShellOverlay = vi.hoisted(() => ({ value: {} as NodeJS.Proces
 vi.mock('@/agent/login-shell-env', () => ({
   getCachedLoginShellEnvSyncLegacy: () => loginShellOverlay.value,
   getLoginShellEnvLegacy: async () => resolvedLoginShellOverlay.value,
-  resetLoginShellEnvCacheLegacy: () => {
-    loginShellOverlay.value = {};
-    resolvedLoginShellOverlay.value = {};
-  },
 }));
 
 import { Session } from '../src/session/session';

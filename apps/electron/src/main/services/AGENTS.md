@@ -76,7 +76,9 @@ bypasses unrelated `beforeunload` guards such as unsaved editors.
   to `error` hides the sidebar banner and the About install button, which are
   the only ways to retry.
 
-Login-shell environment uses the shared native probe through the explicit
-`getUserShellEnvCachedLegacy` cache. Preserve failures and recovery owners rather
-than returning null for failed cleanup. Before changing it, read the
+Login-shell environment uses the application-owned native LoginShellCache Layer.
+getUserShellEnvCachedLegacy is only a launcher boundary. After renderer unload
+approval, quit awaits application disposal alongside CLI exit; retain failed process
+owners for a later quit/recovery. Never substitute failure with null or bind a
+replacement before release. See the
 [decision](../../../../../.agents/notes/implemented/architecture/2026-10-10-effect-login-shell-probe.md).

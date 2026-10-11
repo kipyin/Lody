@@ -1,4 +1,11 @@
-import { Effect } from 'effect';
+import { makeApplicationRuntime } from '@lody/shared/node/application-runtime';
+import {
+  LoginShellCache,
+  LoginShellCacheLive,
+  LoginShellEnvironment,
+} from '@lody/shared/node/login-shell-env';
+import { bindLoginShellCacheLegacy } from '../src/agent/login-shell-env';
+import { Cause, Effect, Layer } from 'effect';
 import type { SessionPreparationSpec } from '@lody/shared';
 import type { GitCredentialLease } from '../src/lib/git-credential-broker';
 import {
@@ -12,7 +19,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { Session } from '../src/session/session';
 
-import { describe, expect, it, vi, afterEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { ACPSessionId, LocalProjectId, SessionId, WorkspaceId } from '@lody/shared';
 
 import { SessionManager, type ISession } from '../src/session/session-manager';
@@ -23,6 +30,25 @@ import type { SessionSandbox, SessionSandboxLimits } from '../src/session/sessio
 import type { GitHubTokenManager } from '../src/lib/github-token-manager';
 import { GitCredentialBroker } from '../src/lib/git-credential-broker';
 import { createTestCloudPort } from './test-cloud-port';
+
+// Sessions borrow the same explicit application owner as production launchers.
+let shellOwner: ReturnType<typeof makeApplicationRuntime<LoginShellCache, never>>;
+beforeEach(() => {
+  shellOwner = makeApplicationRuntime(
+    LoginShellCacheLive.pipe(
+      Layer.provide(
+        Layer.succeed(LoginShellEnvironment, {
+          probe: () => Effect.succeed({}),
+        })
+      )
+    ),
+    { recover: Effect.failCause, project: Cause.squash }
+  );
+  bindLoginShellCacheLegacy(shellOwner);
+});
+afterEach(async () => {
+  await shellOwner.closeLegacy();
+});
 
 const GIB = 1024 * 1024 * 1024;
 

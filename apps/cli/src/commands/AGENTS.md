@@ -8,8 +8,8 @@ CLI/MCP commands and daemon dispatch.
 
 ## Process and daemon lifecycle
 
-- New one-shot commands should use `../lib/command-runtime.ts` (`runOneShotCommand`) so exit
-  codes, telemetry flush, and stream flushing stay consistent.
+- One-shot commands use `runOneShotCommand` for consistent exits/flush. Await
+  application disposal after fleet cleanup; cleanup failures exit nonzero.
 - Process entrypoints, command-owned boundaries, global process-error handlers, and generated
   standalone shims may force exit after their own cleanup policy: `start.ts` owns startup, fatal,
   and signal exits; `daemon-runner.ts` owns watchdog fatal and signal exits. Never force exit from
