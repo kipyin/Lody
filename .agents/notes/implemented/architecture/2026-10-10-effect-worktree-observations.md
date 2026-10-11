@@ -83,3 +83,8 @@ Prerequisites are [#1377](https://github.com/LodyAI/Lody/pull/1377),
 [#1379](https://github.com/LodyAI/Lody/pull/1379),
 [#1381](https://github.com/LodyAI/Lody/pull/1381) and
 [#1389](https://github.com/LodyAI/Lody/pull/1389); they are draft reviews, not merged work.
+The process-ownership fixture holds its repo lease behind an explicit command
+finalizer gate until process TestClock advancement completes. Real filesystem
+release then runs without another clock jump; this prevents a 20-second virtual
+step from falsely expiring the new 5-second file-lock cleanup wait. All original
+empty-directory, retained-process-lease and successor assertions remain.
