@@ -18,3 +18,9 @@ Contract: [foundation Spec](../../specs/e2ee-foundations.md). Entry map: [README
 - Tests use fixed synthetic vectors and negative cases. Record extraction changes
   and source SHA-256 fingerprints in provenance.json; never copy private designs,
   captured transcripts, Lab hosts or unrelated candidate modules.
+
+- Content crypto lives in `src/crypto`; ledger work uses its own directory/entry.
+  AEAD primitives do not authenticate authors or grant permissions. Use trusted
+  caller scope/header and retain v0 key/AAD domains. New seals require host secure
+  randomness; no nonce override, plaintext fallback or implicit retry encryption.
+  Keep derived key material opaque, and validate size before copying large inputs.
