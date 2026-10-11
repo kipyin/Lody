@@ -13,8 +13,8 @@ and file responsibilities: [../README.md](../README.md).
   spawner. Preserve the complete Cause when mapping command failure; pinned v4
   `mapError`/`catch` can discard release defects alongside a typed failure.
 - `worktreeGitLegacy` is the temporary command facade; keep Legacy
-  visible and delete it when the manager becomes native. Infrastructure and
-  unresolved-release failures must escape fallback/forced-removal catches.
+  visible; delete it when the manager becomes native. Infrastructure,
+  FileLockCleanupFailed/LockReleaseFailed escape fallback/forced-removal catches.
   Native observations compose `WorktreeObservations` with the owner-provided
   FileLocks. `inspect`/`list` own the repo lease; `info` reads under the mutation's
   already-held lock. Preserve explicit missing/unborn/corrupt outcomes and mixed

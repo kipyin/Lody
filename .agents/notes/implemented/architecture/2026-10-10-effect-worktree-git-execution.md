@@ -75,6 +75,9 @@ Official [service/Layer documentation](https://github.com/Effect-TS/effect/blob/
 and [FileSystem documentation](https://github.com/Effect-TS/effect/blob/main/packages/effect/src/FileSystem.ts)
 were checked against installed v4 source; v3 examples are not the implementation.
 
+Fallback guards also reject FileLockCleanupFailed and LockReleaseFailed from the
+updated file-lock prerequisite; an unresolved repository lease cannot become absence.
+
 ## Validation and limits
 
 Native tests use Deferred and TestClock for deadlines, interruption and recovery.
