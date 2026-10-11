@@ -1,7 +1,7 @@
 # E2EE foundations
 
-An independently testable extraction, with no production consumers. The only
-package entry is `@lody/e2ee-core`; it uses the root Effect 4.0.2 catalog.
+An independently testable extraction, with no production consumers. The root
+foundation entry is `@lody/e2ee-core`; it uses the root Effect 4.0.2 catalog.
 
 | Entry | Responsibility |
 | --- | --- |
@@ -88,3 +88,9 @@ See the [extraction note](../../.agents/notes/implemented/architecture/2026-10-1
 To regenerate the fixture in a disposable Python environment, install `PyNaCl==1.6.2`
 and run `python test/generate-crypto-vector.py > test/crypto-vector.json` from this
 package. Runtime tests consume the checked-in JSON; Python is not a project dependency.
+
+The separate [`@lody/e2ee-core/ledger`](src/ledger/README.md) subentry now
+provides strict records, signature/chain verification and deterministic permission
+replay from caller-pinned trust. It has no snapshot, CAS, journal or production
+consumer. The root exports and crypto modules remain unchanged. Ledger extraction
+fingerprints are [separate](src/ledger/provenance.json).

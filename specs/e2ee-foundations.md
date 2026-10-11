@@ -22,7 +22,7 @@ Byte wrappers copy public material. Canonical CBOR rejects alternate encodings,
 trailing input and unsupported types, with size/depth/array limits. Strict Ed25519
 rejects invalid signatures and noncanonical or mixed-torsion signing keys.
 
-Signature validity is only one prerequisite. This package does not verify current
+Signature validity is only one prerequisite. The root foundation entry does not verify current
 membership, freshness, write permission, snapshot history or server admission.
 The separate AEAD primitive derives a scoped content key with HKDF-SHA-256 and
 validates XChaCha20-Poly1305 tags using caller-supplied context/header and binding.
