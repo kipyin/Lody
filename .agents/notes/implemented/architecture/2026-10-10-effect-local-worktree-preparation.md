@@ -59,6 +59,9 @@ program and delegates to this same executor. Delete these helpers when the nativ
 mutation owner receives its services; worktreeGitLegacy still serves unmigrated
 Git command sequences. No public process Legacy export is removed by this unit.
 
+runWorktreeLegacy now uses squashFileLockFailure over the process-aware projection,
+retaining every file and process recovery lease alongside preparation scratch errors.
+
 ## Validation and limits
 
 Nine native ownership cases cover the injected Clock, partial write failure,

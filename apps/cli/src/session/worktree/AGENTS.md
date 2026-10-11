@@ -10,8 +10,8 @@ and file responsibilities: [../README.md](../README.md).
 
 - Native Git commands/helper probes compose `WorktreeGit` / `WorktreeGitLive`.
   Layers supply official filesystem, host environment and the existing process
-  spawner. Preserve the complete Cause when mapping command failure; pinned v4
-  `mapError`/`catch` can discard release defects alongside a typed failure.
+  spawner. Preserve full Cause; Legacy projection uses squashFileLockFailure.
+  Pinned v4 mapError/catch can discard release defects beside a typed failure.
 - `worktreeGitLegacy` is the temporary command facade; keep Legacy
   visible; delete it when the manager becomes native. Infrastructure,
   FileLockCleanupFailed/LockReleaseFailed escape fallback/forced-removal catches.
