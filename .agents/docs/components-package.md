@@ -8,6 +8,13 @@ Workspace durable synchronization is composed by `providers/workspace-streams-tr
 Its [content boundary](../../specs/workspace-streams-content.md) keeps ordinary SDK bytes
 and persistence intact while exposing protection and snapshot handling to future callers.
 The protected seam is not a product E2EE entry point or a persisted-mode resolver.
+The owning transport suite also composes merged P07 signature/AEAD and P08 current
+ledger replay through the published Repo 0.22.0 interfaces, using a synthetic
+native test signer. It checks v0 batches, compressed snapshots, safe error reasons
+and durable state/cursor retention. This [P10 preparation](../notes/implemented/testing/2026-10-11-e2ee-sdk-preparation.md)
+does not supply historical-author authorization, a production signer, host snapshot
+admission or client recovery from an unusable remote snapshot.
+
 
 ## Crash surfaces
 

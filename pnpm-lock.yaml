@@ -1418,6 +1418,9 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@lody/e2ee-core':
+        specifier: workspace:*
+        version: link:../e2ee-core
       '@lody/configs':
         specifier: workspace:*
         version: link:../configs
