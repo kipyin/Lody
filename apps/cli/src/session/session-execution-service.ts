@@ -4046,6 +4046,7 @@ export class SessionExecutionService {
               }),
               self.awaitInitializationStall(sessionId, sessionDoc, runtime)
             );
+            return undefined;
           })
         )
       )
