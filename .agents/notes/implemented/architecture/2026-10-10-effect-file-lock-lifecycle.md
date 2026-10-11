@@ -8,7 +8,7 @@ PR: [#1377](https://github.com/LodyAI/Lody/pull/1377)
 
 ## Abstract
 
-Promise lock queues and timer retries obscured cancellation and swallowed cleanup failures. A FileLocks Layer now owns FIFO admission and failed-release generations; scoped operations publish complete metadata through exclusive hard links, with one compatibility runtime for unmigrated callers. Clock/Schedule preserve contention deadlines and stale-lock policy. The skill audit still identifies unbounded stalled filesystem cleanup and retry dropping lock-release errors alongside body failures. Linux tests verify implemented behavior; real Windows and unsupported filesystems remain unverified.
+Promise lock queues and timer retries obscured cancellation and swallowed cleanup failures. A FileLocks Layer now owns FIFO admission and failed-release generations; scoped operations publish complete metadata through exclusive hard links, with one compatibility runtime for unmigrated callers. Clock/Schedule preserve contention deadlines and stale-lock policy. Independent cleanup waits are bounded while their raw OS operations remain owned, and acquisition-only retry preserves combined body/release failures. Linux tests verify implemented behavior; real Windows and unsupported filesystems remain unverified.
 
 ## Decision and evidence
 
@@ -75,43 +75,56 @@ Catalog mutations now compose `withFileLock` and expose FileLocks in their envir
 
 The old Promise `withFileLock` export is replaced by the native Effect API. `cleanupStaleLocks` is native; no production caller needed a synchronous compatibility cleanup entry. The sole `fileLocksLegacy` object is deprecated and its name remains visible in imports and calls. Worktree and installation entrypoints retain their Promise workflows; their callbacks receive caller cancellation directly and are joined in the body before release. A callback ignoring its signal can delay cancellation. Finalizers do not wait on an unbounded Promise body. Remove the compatibility object and async-context bridge after these entrypoints use the daemon runtime; provide one FileLocks instance in that root so separate service instances do not accidentally charge local contention as cross-process waiting.
 
-Native programs crossing fileLocksLegacy.runPromise use #1379's squashProcessFailure, preserving simultaneous body failure and every process recovery lease. Direct Cause.squash loses the lease and is caught by the resource-state test. This adds no lock kernel or execution facade. The lock protects program execution; transferred failed process resources are not reported released.
+Native programs crossing fileLocksLegacy.runPromise use squashFileLockFailure over #1379's process-aware projection, preserving body failures and every file/process recovery lease. Direct Cause.squash loses the lease and is caught by the resource-state test. This adds no lock kernel or execution facade. The lock protects program execution; transferred failed process resources are not reported released.
 
 ## Verification
 
-The owning suite exercises strict FIFO with immediate reacquisition, queued and cross-process waiter cancellation, failed/interrupted bodies, stale and foreign pid reclamation, reentry through sanitized aliases and child fibers, metadata write failure, release failure retention/retry, and replacement-token protection. A real Node child uses readiness IPC to verify mutual exclusion in both directions; it starts and stops through the existing process service. CLI adapter tests retain profile paths and naming; duplicate stale/live-lock cases move into the native suite. Catalog, worktree and cloudflared consumption retain behavioral coverage.
+The owning suite retains real-file FIFO/reentry, cancellation, stale-generation,
+crash-scratch and cross-process coverage. Earlier migration/review experiments
+caught fourteen ownership mechanisms and four directory/reclamation mechanisms.
+Current cleanup tests retain those behaviors and add independent bounded release,
+original-operation recovery, successor protection and complete mixed failure.
 
-Initial migration verification: all fourteen ablations were caught: admitting every ticket, retaining cancelled tickets, skipping release, swallowing release failure, removing the generation check, allowing reentry, overwriting publication, freezing publication age, dropping failed scratch ownership, rejecting confirmed scratch absence, making publication interruptible, masking metadata preparation, losing process recovery leases, and skipping Layer cleanup. Baseline and restored source pass 21 tests. Experiments use a throwaway copy; scripts and source-string tests do not ship. After integrating #1379, file-lock 21, process 40 and relevant CLI 38 tests pass. The integrated full pnpm check passes: CLI 3692 cases, shared 113 files / 1389 cases, Electron 214 cases and all guards. Type-aware lint has zero errors. The previously reproduced Roost signed-prefix timeout passes in this complete run. Git/PATH, temporary-package scope and lock-directory contamination are isolated only in validation child processes, without changing global Git configuration or removing coverage. The stack now uses #1379 as its base, with fixed Effect 4.0.2. Process/platform/public/import/i18n guards, format, format:check and docs check pass. Local Linux results do not establish real Windows, hard-link behavior on other filesystems, delegated cgroups, packaging or end-to-end ACP/Session/Turn cancellation. Windows descendant ownership after root exit remains unfinished.
+Verification of the final assembled source against main 45753fe61e0427043f5cb14c91b33e996ca376b0:
+workspace typechecks and type-aware lint pass with zero errors. Full pnpm check
+reaches CLI testing: 3753 pass, one skip, and the previously reproduced Roost
+signed-prefix 30-second timeout; no full green check is claimed. Supplemental
+Shared passes 112 files / 1415 cases and Electron passes 216 cases. Eight related
+CLI suites pass 124 cases; the shared lock/shell/process suites pass 89 cases.
+Six temporary ablations are caught: removing the cleanup bound, reissuing an old
+successful unlink, dropping file cleanup Cause, cancelling the shared producer
+with a reader, discarding the original failed recovery owner, and declaring failed
+shell release successful. Original/restored lock and shell suites pass 28/18 cases.
+Scripts remain outside product code. Formatting, all five boundary guards and docs
+check pass. Validation children isolate Git/PATH/temp/lock inputs; global Git
+configuration, original checkout HEAD and dirty submodule gitlinks remain unchanged.
+During validation main advanced with unrelated changes; these fixes retain the
+explicit tested snapshot, not a claim of integration with that later head.
 
-The three review corrections add behavior tests to the same suite: environment defaults change within one compatibility runtime (also explicit override and profile fallback), continually replaced stale generations still time out and leave the replacement intact, confirmed disappearance retries without sleeping, and crash leftovers are collected without deleting live published/waiting candidates or fresh unidentified directories. Before the fixes, three of these regressions fail; after the fixes the full 25-case lock suite passes, including real cross-process mutual exclusion. Four temporary ablations are caught: freezing environment defaults, immediately retrying changed content, backing off after confirmed disappearance, and skipping crash-scratch cleanup. Restored source passes the full suite; scripts are not committed. The nine relevant CLI consumer suites pass 129 cases. These fixtures use real files and injected Clock/FileSystem boundaries, not source-string assertions or mock call counts.
+## Bounded cleanup and complete failure
 
-Latest assembled-stack validation against main 2e9482723e869fca7bea52fd5f036a37c53787e1: `pnpm check` completes workspace types and type-aware lint with zero errors, then stops at the previously reproduced Roost signed-prefix 30-second timeout; CLI has 3748 passed and one skipped case. Supplemental Shared passes 112 files / 1407 cases and Electron passes 215 cases. The focused shared suites pass 127 cases and seven CLI consumer suites pass 99. Format, format:check, shared-source formatting, all five boundary guards, initial docs status and final docs check pass. Effect remains pinned to 4.0.2; main's locked Loro 0.22.0 is used. No coverage or global Git configuration is changed; only validation child processes isolate injected Git, PATH, lock and temporary-directory inputs. This verifies Linux, not real Windows/macOS, other filesystems, delegated cgroups, packaging or production.
+Correction of the two reviewed gaps: each cleanup lease retains one raw filesystem
+operation, and an independently interruptible waiter bounds each join to 5 seconds
+using the captured Clock. The raw unlink remains masked and explicitly owned by
+the lease and service registry: timing out its waiter does not cancel an OS deletion.
+Only a settled failed attempt may be retried; a pending or completed successful
+attempt is joined, never issued again against a reused path. A pending generation
+blocks later local holders. Successful completion removes it from the registry;
+failed Scope disposal transfers all cleanup leases through FileLockCleanupFailed,
+so recovery remains possible after that Scope closed. Service disposal joins its
+retained leases concurrently; the bound applies to each wait, not all filesystem
+acquisition or cross-process reclamation operations.
 
-## Remaining filesystem cleanup bound
+The retry/backoff loop now surrounds only metadata/publication acquisition.
+The body runs exactly once, and all body/release Cause reasons survive.
+squashFileLockFailure retains the primary process-aware projection, full native
+Cause, and every file cleanup lease. Worktree compatibility projections and fallback
+guards also preserve these owners rather than turning failed release into absence.
+The previous pattern, interruptible unlink plus timeout, was rejected because a
+late OS deletion could remove a successor after its local waiter disappeared.
 
-The main-branch Effect skill audit confirms a remaining lifecycle limit: lock
-release, candidate removal and Layer recovery currently await filesystem I/O
-without an independent cleanup deadline. A temporary real-file experiment gates
-the injected remove operation with Deferred; after ten minutes of TestClock
-advancement, both the holder and its awaited interruption are still pending.
-Opening the gate completes cleanup and leaves no files. The experiment does not
-ship. The contention timeout does not bound these waits, and existing immediate
-release-failure tests do not establish bounded shutdown when I/O never settles.
-
-A follow-up should retain the original in-flight cleanup operation and its owner,
-bound the caller's wait, and keep that lock generation unavailable until actual
-completion is known. Merely making unlink interruptible and adding timeout is
-unsafe: cancellation of a local waiter does not prove the underlying OS unlink
-stopped; a late unlink could remove a replacement at the reused lock path. This
-is a proposed cleanup improvement, not implemented by the main synchronization.
-
-A second real-file experiment exposes a distinct failure-path gap: a failed body
-plus PermissionDenied removing its lock leaves the lock retained, but the native
-result contains only the body's failure. In pinned 4.0.2, the surrounding
-Effect.retry selects the first error when all Cause reasons are Fail; stopping
-the Schedule re-fails that error and loses the release failure. Retry should cover
-only acquisition's single LockBusy, with the body and release outside it. The
-Legacy projection should also preserve lock cleanup failures alongside the primary
-error, as its current projection preserves only process recovery leases. The
-full-Cause requirement fails in the temporary experiment; subsequent recovery
-still succeeds when deletion becomes available. No product fix is claimed here.
+The owning real-file suite adds blocked-unlink cancellation, blocked Layer disposal,
+recovery after Scope closure, successor protection, and combined body/file-release
+failure. Deferred readiness and TestClock drive deadlines; no real sleeps are used.
+Temporary ablation scripts remain outside the repository. Application/session
+ownership and non-cooperative cross-process path replacement remain separate limits.

@@ -60,6 +60,9 @@ ProcessCleanupFailed 租约在失败后仍可用。已核对官方
 [FileSystem 文档](https://github.com/Effect-TS/effect/blob/main/packages/effect/src/FileSystem.ts)及已安装 v4 源码，
 没有直接照搬 v3 示例。
 
+回退守卫也拒绝文件锁前置单元的 FileLockCleanupFailed 和 LockReleaseFailed；
+未释放的仓库锁不能转换为不存在。
+
 ## 验证与限制
 
 原生测试用 Deferred 与 TestClock 验证期限、中断和恢复。既有真实 Git 创建、查询、

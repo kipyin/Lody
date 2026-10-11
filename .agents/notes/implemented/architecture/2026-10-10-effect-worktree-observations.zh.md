@@ -61,3 +61,6 @@ pnpm format、format:check 和 docs check 通过，保护评审 topics 为空。
 [#1379](https://github.com/LodyAI/Lody/pull/1379)、
 [#1381](https://github.com/LodyAI/Lody/pull/1381) 和 [#1389](https://github.com/LodyAI/Lody/pull/1389)，
 它们是 draft PR，尚未合并。
+进程所有权夹具在明确的命令 finalizer 门闩后保留仓库锁，先完成进程 TestClock
+推进，再放行真实文件释放，不再推进时钟。这样不会用一次 20 秒虚拟时间跳跃
+误触发新增的 5 秒文件锁清理期限。原有空目录、进程租约保留及后继者断言全部保留。
