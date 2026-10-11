@@ -48,6 +48,9 @@ Parent instructions apply. Background: [README.md](README.md).
 
 ## Session tool contracts
 
+- Keep the shared causal chain cap and MCP guidance aligned: create/chat tools forbid
+  courtesy-only messages, duplicate result callbacks, and evading the depth limit.
+
 - `lody_ios_simulator_preview` is the native-app tool; web previews remain
   `lody_report_preview_candidate`. Bind local agent-control RPC to MCP session context;
   the daemon resolves the active user. Return operation handles, never viewer URLs or
@@ -90,6 +93,15 @@ Parent instructions apply. Background: [README.md](README.md).
   `limit` counts displayable turns, the cursor is the raw position from the previous page, and
   hidden/empty rows never shift it. A page reports `hasMore` from the underlying raw rows, so a
   scan budget never claims the history ended. Session mentions expand to
-  `[@Title](session://<sessionId>)`; resolve them with this tool, accepting a bare id or a
-  `session://` URI.
-  ([note](../../../../.agents/notes/implemented/feature/2026-09-18-session-mention-uri-and-paste.md))
+  `[@Title](lody://session/<id>?workspace=<id>)`; accept bare ids and legacy
+  `session://` URIs too. Explicit workspace must match the tool context.
+  ([contract](../../../../specs/deep-links.md))
+
+- Single create/chat attachments require durable Operations and the calling daemon's
+  `sessionInputAttachments` capability. Resolve paths inside the calling Session's
+  authoritative workspace, never the daemon cwd or target workspace. Freeze references
+  before acceptance; retries use stored references. Legacy wait and batch schemas reject
+  attachment arguments. See [input Spec](../../../../specs/cli-session-attachments.md).
+
+- The user-owned inherited `collaborationStopped` barrier rejects delegation. Agents and
+  completion callbacks must never clear it; execution also fences setup and prompt dispatch.

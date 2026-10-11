@@ -60,6 +60,45 @@ afterEach(async () => {
 });
 
 describe('LodyOperationStore', () => {
+  it('freezes complete attachment inputs atomically across retries and database reopen', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lody-inputs-'));
+    roots.add(root);
+    const dbPath = path.join(root, 'operations.sqlite3');
+    const input = baseInput();
+    const attachment = {
+      type: 'file' as const,
+      fileId: 'file-1',
+      fileName: 'report.txt',
+      mimeType: 'text/plain',
+      sizeBytes: 8,
+      sha256: 'a'.repeat(64),
+      textPreview: true,
+      transport: 'r2' as const,
+      uploadedAt: 1,
+    };
+    let store = new LodyOperationStore(dbPath);
+    try {
+      store.accept({ ...input, targetInputAttachments: [[attachment]] });
+      const retry = store.accept({
+        ...input,
+        targetInputAttachments: [[{ ...attachment, fileId: 'ignored-retry-upload' }]],
+      });
+      expect(retry.created).toBe(false);
+      expect(retry.operation.targetInputAttachments).toEqual([[attachment]]);
+      store.close();
+      store = new LodyOperationStore(dbPath);
+      expect(store.get(input.requesterSessionId, input.operationId).targetInputAttachments).toEqual(
+        [[attachment]]
+      );
+      expect(() =>
+        store.accept({ ...input, operationId: 'bad', targetInputAttachments: [] })
+      ).toThrow('match');
+      expect(() => store.get(input.requesterSessionId, 'bad')).toThrow();
+    } finally {
+      store.close();
+    }
+  });
+
   it('freezes source authors across retries and reopening without changing legacy operation rows', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'lody-author-'));
     roots.add(root);
@@ -968,9 +1007,12 @@ describe('LodyOperationStore', () => {
     }
   });
 
-  it('retains pending Delivery past seven days and cleans only consumed rows', async () => {
+  it('retains pending Delivery and retires consumed ids across cleanup and reopen', async () => {
     let nowMs = Date.parse('2026-07-20T00:00:00Z');
-    const store = await makeStore(() => nowMs);
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lody-operation-retirement-'));
+    roots.add(root);
+    const dbPath = path.join(root, 'operations.sqlite3');
+    let store = new LodyOperationStore(dbPath, () => nowMs);
     try {
       store.accept(baseInput());
       store.finish('requester-1' as SessionId, 'review-round-1', {
@@ -993,11 +1035,43 @@ describe('LodyOperationStore', () => {
           'retention-finalization'
         )
       ).toMatchObject({ consumed: true });
-      nowMs += 8 * 24 * 60 * 60 * 1_000;
-
-      expect(() => store.get('requester-1' as SessionId, 'review-round-1')).toThrowError(
-        expect.objectContaining<LodyOperationStoreError>({ code: 'OPERATION_NOT_FOUND' })
+      // Preserve a synthetic old writer's row to exercise the SQL compatibility fence.
+      const legacyWriter = new Database(dbPath);
+      try {
+        legacyWriter.exec('CREATE TEMP TABLE old_operation AS SELECT * FROM operations');
+        nowMs += 8 * 24 * 60 * 60 * 1_000;
+        expect(() => store.get('requester-1' as SessionId, 'review-round-1')).toThrowError(
+          expect.objectContaining<LodyOperationStoreError>({ code: 'OPERATION_NOT_FOUND' })
+        );
+        expect(() =>
+          legacyWriter.exec('INSERT INTO operations SELECT * FROM old_operation')
+        ).toThrow(/already completed and expired/);
+      } finally {
+        legacyWriter.close();
+      }
+      store.close();
+      store = new LodyOperationStore(dbPath, () => nowMs, { maintenance: false });
+      expect(() => store.accept(baseInput())).toThrowError(
+        expect.objectContaining<LodyOperationStoreError>({
+          code: 'OPERATION_ID_REUSED',
+          retryable: false,
+        })
       );
+      expect(() =>
+        store.findMatchingRetry(
+          'requester-1' as SessionId,
+          'review-round-1',
+          'session_chat',
+          baseInput().canonicalCommand,
+          'user-1',
+          'source-turn-1'
+        )
+      ).toThrowError(expect.objectContaining({ code: 'OPERATION_ID_REUSED' }));
+      expect(store.listActive('workspace-1' as WorkspaceId, 'machine-1' as MachineId)).toEqual([]);
+      expect(store.listPendingDeliveries('workspace-1' as WorkspaceId)).toEqual([]);
+      expect(
+        store.accept({ ...baseInput(), requesterSessionId: 'requester-2' as SessionId })
+      ).toMatchObject({ created: true });
     } finally {
       store.close();
     }
@@ -1150,26 +1224,32 @@ const readLastCleanupAtMs = (dbPath: string): string | undefined => {
 };
 
 describe('maintenance-free open', () => {
-  it('migrates a current delivery schema that lacks progress settlements', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'lody-operation-store-progress-migration-'));
-    roots.add(root);
-    const dbPath = path.join(root, 'operations.sqlite3');
-    const initial = new LodyOperationStore(dbPath);
-    initial.close();
+  it.each(['operation_progress_settlements', 'operation_retired_ids'])(
+    'migrates a current delivery schema that lacks %s',
+    async (table) => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), 'lody-operation-store-progress-migration-')
+      );
+      roots.add(root);
+      const dbPath = path.join(root, 'operations.sqlite3');
+      const initial = new LodyOperationStore(dbPath);
+      initial.close();
 
-    const legacy = new Database(dbPath);
-    legacy.exec('DROP TABLE operation_progress_settlements');
-    legacy.close();
+      const legacy = new Database(dbPath);
+      legacy.exec(`DROP TABLE ${table}`);
+      legacy.close();
 
-    const migrated = new LodyOperationStore(dbPath, undefined, { maintenance: false });
-    try {
-      expect(
-        migrated.listPendingProgress('workspace-1' as WorkspaceId, 'machine-1' as MachineId)
-      ).toEqual([]);
-    } finally {
-      migrated.close();
+      const migrated = new LodyOperationStore(dbPath, undefined, { maintenance: false });
+      try {
+        expect(migrated.accept(baseInput())).toMatchObject({ created: true });
+        expect(
+          migrated.listPendingProgress('workspace-1' as WorkspaceId, 'machine-1' as MachineId)
+        ).toEqual([]);
+      } finally {
+        migrated.close();
+      }
     }
-  });
+  );
 
   it('does not acquire the SQLite writer lock when the schema is current', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'lody-operation-store-readonly-open-'));

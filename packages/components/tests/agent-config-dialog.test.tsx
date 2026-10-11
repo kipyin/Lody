@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { createStore, Provider } from 'jotai';
 import {
+  getStaticBuiltinAcpCapabilities,
   ACP_CAPABILITY_CACHE_VERSION,
   PROVIDER_SETUP_PROTOCOL_VERSION,
   getAcpCapabilityCacheKey,
@@ -859,9 +860,7 @@ describe('AgentConfigDialog', () => {
       );
       expect(document.body.textContent).toContain('Open install guide');
     } else {
-      expect(document.body.textContent).toContain(
-        'This runtime is not available on the target machine.'
-      );
+      expect(document.body.textContent).toContain('npm install -g dimcode');
       expect(document.body.textContent).not.toContain('Open install guide');
     }
     await act(async () => {
@@ -1095,7 +1094,7 @@ describe('AgentConfigDialog', () => {
           agentType: 'deepseek',
           env: {
             DEEPSEEK_API_KEY: 'sk-deepseek-test',
-            DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
+            DEEPSEEK_BASE_URL: 'https://api.deepseek.com/anthropic',
           },
         })
       );
@@ -1176,13 +1175,36 @@ describe('AgentConfigDialog', () => {
       label: 'a /v1 trailing slash',
       env: { DEEPSEEK_API_KEY: 'sk-old', DEEPSEEK_BASE_URL: 'https://api.deepseek.com/v1/' },
     },
-  ])('opens the official DeepSeek tab when editing a config with $label', async ({ env }) => {
-    await renderDeepSeekEdit(env);
+    {
+      label: 'a Messages root',
+      env: { DEEPSEEK_API_KEY: 'sk-old', DEEPSEEK_BASE_URL: 'https://api.deepseek.com/anthropic' },
+    },
+    {
+      label: 'a versioned Messages root',
+      env: {
+        DEEPSEEK_API_KEY: 'sk-old',
+        DEEPSEEK_BASE_URL: 'https://api.deepseek.com/anthropic/v1/',
+      },
+    },
+  ])('opens and saves the official DeepSeek endpoint with $label', async ({ env }) => {
+    const onSubmit = vi.fn(async (_payload: AgentConfigSubmitPayload) => {});
+    await renderDeepSeekEdit(env, onSubmit);
 
     expect(getTabByName('DeepSeek official').getAttribute('aria-selected')).toBe('true');
     expect(getVisibleDeepSeekEndpointInput()).toBeNull();
     expect(document.body.querySelector<HTMLInputElement>('#deepseek-api-key')?.value).toBe(
       'sk-old'
+    );
+    await act(async () => {
+      getPrimaryAction('Save').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: {
+          DEEPSEEK_API_KEY: 'sk-old',
+          DEEPSEEK_BASE_URL: 'https://api.deepseek.com/anthropic',
+        },
+      })
     );
   });
 
@@ -1239,7 +1261,7 @@ describe('AgentConfigDialog', () => {
       expect.objectContaining({
         env: {
           DEEPSEEK_API_KEY: 'sk-updated',
-          DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
+          DEEPSEEK_BASE_URL: 'https://api.deepseek.com/anthropic',
         },
       })
     );
@@ -1282,7 +1304,7 @@ describe('AgentConfigDialog', () => {
         env: {
           EXTRA_FLAG: '1',
           DEEPSEEK_API_KEY: 'sk-deepseek-test',
-          DEEPSEEK_BASE_URL: 'https://api.deepseek.com',
+          DEEPSEEK_BASE_URL: 'https://api.deepseek.com/anthropic',
         },
       })
     );
@@ -1687,9 +1709,9 @@ describe('AgentConfigDialog', () => {
     expect(findSignInAgainButton()).toBeUndefined();
   });
 
-  // Claude, Codex and Grok generate their own title over ACP, so the setting is
+  // Claude and Grok generate their own title over ACP, so the setting is
   // obsolete for them. Kimi keeps it (covered by the normalization test below).
-  it.each(['claude', 'codex', 'grok'])(
+  it.each(['claude', 'grok'])(
     'hides the title generation section for builtin %s',
     async (agentType) => {
       await renderDialog(
@@ -1698,6 +1720,46 @@ describe('AgentConfigDialog', () => {
       );
 
       expect(document.body.textContent).not.toContain('Title generation');
+    }
+  );
+
+  it.each([undefined, { model: 'gpt-5.6-sol', reasoning_effort: 'high', mode: 'read-only' }])(
+    'shows and saves Codex title configuration even with an old ownership cache: %j',
+    async (configured) => {
+      const config = createBuiltinConfig({
+        agentType: 'codex',
+        titleGeneration: configured ? { configOptionValues: configured } : undefined,
+      });
+      const machine = createMachine('Workstation');
+      machine.acpCapabilities = {
+        [getAcpCapabilityCacheKey(config.id)]: {
+          ...createTitleConfigMachine().acpCapabilities![getAcpCapabilityCacheKey(kimiConfigId)]!,
+          agentType: 'codex',
+          sessionTitle: true,
+          ...getStaticBuiltinAcpCapabilities('builtin', 'codex'),
+        },
+      };
+      const onSubmit = vi.fn(async () => {});
+      await renderDialog({ kind: 'edit', config }, machine, onSubmit);
+      expect(document.body.textContent).toContain('Title generation');
+      await act(async () => {
+        Array.from(document.body.querySelectorAll('button'))
+          .find((button) => button.textContent?.trim() === 'Save')!
+          .click();
+      });
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          titleGeneration: {
+            configOptionValues: expect.objectContaining(
+              configured ?? {
+                model: 'gpt-5.6-luna',
+                reasoning_effort: 'low',
+                mode: 'agent-full-access',
+              }
+            ),
+          },
+        })
+      );
     }
   );
 

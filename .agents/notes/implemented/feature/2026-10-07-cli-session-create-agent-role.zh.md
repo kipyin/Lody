@@ -52,6 +52,16 @@ mode/model 校验保持既有的快速失败行为。工作上下文参数（`--
 + `buildMcpCreateOptions` 一致的平价测试。MCP 套件保持原有覆盖，仅更新了
 sync reason 字符串。
 
+[PR #1286](https://github.com/LodyAI/Lody/pull/1286) 合入当前 `main` 后，Role
+解析、MCP 服务端和 session 命令三个套件共 149 个测试全部通过。冲突解决保留
+主分支对旧 Review agent 的移除及 CLI 参考文档链接迁移，同时保留 Role 参数。
+合并后的命令继续使用当前附件准备与冻结输入创建流程。
+
+类型检查、lint、边界检查、格式化和文档检查均通过。全仓检查遇到两项与改动
+无关的主机环境失败：worktree 查询测试中的 macOS `/var` 与 `/private/var`
+路径别名，以及原生 Git 传输测试中的会话凭据包装器。规范化临时目录，并从
+测试进程移除该包装器后，两个套件的 25 个测试全部通过。
+
 未验证：对真实工作区端到端执行 `lody session create --agent-role`（该命令
 没有 commander 级测试设施，与其他创建参数一样只有单元测试覆盖）。
 

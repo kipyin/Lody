@@ -1,4 +1,6 @@
 import { useIosSimulatorPreviewRequest } from './ios-simulator/use-ios-simulator-preview-request';
+import { createLoroSyncErrorTools } from '@lody/shared/loro-sync-errors';
+import { RepoSyncError, RepoTransportError } from 'loro-repo';
 import { SessionPendingMessages } from '@/components/chat/session-pending-messages';
 import {
   buildDraftUserHistoryEntry,
@@ -187,7 +189,8 @@ import { format, formatDistanceToNow } from 'date-fns';
 import type { Locale } from 'date-fns';
 import { enUS } from 'date-fns/locale/en-US';
 import { zhCN } from 'date-fns/locale/zh-CN';
-import { getAppShareUrl } from '@/lib/app-location';
+import { buildSessionLink } from '@lody/shared/session-link';
+import { openSessionDeepLink } from '@/lib/session-deep-link';
 import { resolveSessionOpenInIdePathTarget } from '@/lib/session-open-in-ide-path';
 import {
   buildPathLauncherLaunchInput,
@@ -264,7 +267,6 @@ import {
   withPrBranchUpkeep,
   withQuickActionOrigin,
 } from './create-pr-prompt';
-import { AutoReviewMenuItem } from './auto-review-menu-item';
 import { WorktreeIcon } from '@/components/icons/worktree-icon';
 import {
   getSessionForkDestinationOptions,
@@ -272,9 +274,6 @@ import {
   type SessionForkDestination,
   type SessionForkWorktreeAvailability,
 } from './session-fork-destination-menu';
-import { ReviewAgentSetupDialog } from './auto-review-info';
-import { AutoReviewStatus } from './auto-review-status';
-import { useAutoReview } from '@/hooks/use-auto-review';
 import { SessionAgentFileLinkMenuProvider } from './session-agent-file-link-menu';
 import { ConversationColumn } from '@/components/shared/conversation-column';
 import { SessionRelationCard } from '@/components/shared/session-relation-card';
@@ -352,6 +351,8 @@ import {
 } from './session-turn-facts';
 import { AlertDialog } from '@/ui/dialog';
 import { resolveSessionHtmlAttachmentAction } from './session-html-attachment-action';
+
+const { formatLoroSyncError } = createLoroSyncErrorTools({ RepoSyncError, RepoTransportError });
 
 const styles = stylex.create({
   historyTriggerIcon: { width: 'calc(var(--spacing) * 4)', height: 'calc(var(--spacing) * 4)' },
@@ -503,10 +504,6 @@ const styles = stylex.create({
   stream: { height: '100%' },
   shareRequestsScroller: { maxHeight: '35vh', flexShrink: 0, overflowY: 'auto' },
   shareRequestsColumn: { paddingInline: 'calc(var(--spacing) * 3)' },
-  reviewStatusColumn: {
-    paddingInline: 'calc(var(--spacing) * 3)',
-    paddingBottom: 'calc(var(--spacing) * 1.5)',
-  },
   headerMenuStaticRow: {
     display: 'flex',
     width: '100%',
@@ -726,6 +723,8 @@ const styles = stylex.create({
 });
 
 function getErrorMessage(err: unknown): string {
+  const syncError = formatLoroSyncError(err);
+  if (syncError) return syncError;
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
   return String(err);
@@ -740,7 +739,6 @@ import {
 } from '@/lib/posthog-analytics';
 import type { AnalyticsOutcome } from '@lody/shared';
 import { collectPendingScheduledTasksFromHistory, type PendingScheduledTask } from '@lody/shared';
-import { buildAuthorFixPrompt } from '@lody/shared';
 import {
   getPullRequestNumber,
   getPullRequestRepoFullName,
@@ -1301,7 +1299,6 @@ export function SessionHeaderMenu({
   forkWorktreeAvailability = 'hidden',
   onForkMenuOpen,
   onRename,
-  onOpenReviewSettings,
   owner,
   openedByRelations,
   onArchive,
@@ -1331,7 +1328,6 @@ export function SessionHeaderMenu({
   forkWorktreeAvailability?: SessionForkWorktreeAvailability;
   onForkMenuOpen?: () => void;
   onRename?: () => void | Promise<void>;
-  onOpenReviewSettings?: () => void;
   /** Multi-member workspaces only; omitted elsewhere. */
   owner?: SessionOwnerMenuState;
   /** Omitted when this Session neither opened nor was opened by another. */
@@ -1376,7 +1372,6 @@ export function SessionHeaderMenu({
     sharing?.visibility === 'unknown' ||
     (sharing?.visibility === 'private' &&
       (sharing.privateReason === 'machine-not-registered' || !sharing.canManage));
-  const [reviewSetupOpen, setReviewSetupOpen] = useState(false);
   const conversationWide = useAtomValue(conversationWideModeAtom);
   const setConversationWide = useSetAtom(conversationWideModeAtom);
 
@@ -1928,12 +1923,6 @@ export function SessionHeaderMenu({
             {t('sessions.shareAsImage', 'Share as image…')}
           </Menu.Item>
 
-          <AutoReviewMenuItem
-            sessionId={session.id}
-            meta={session}
-            onConfigurationRequired={() => setReviewSetupOpen(true)}
-          />
-
           {/* Archive / Restore + Delete */}
           {isArchived
             ? (onRestore || onDelete) && (
@@ -1977,12 +1966,6 @@ export function SessionHeaderMenu({
               )}
         </Menu.Content>
       </Menu.Root>
-      <ReviewAgentSetupDialog
-        open={reviewSetupOpen}
-        onOpenChange={setReviewSetupOpen}
-        machineName={machineName ?? undefined}
-        onOpenSettings={() => onOpenReviewSettings?.()}
-      />
     </>
   );
 }
@@ -3181,7 +3164,9 @@ export const SessionChatInterface = memo(
     /** The hydrated tail; every reader below that scans backwards for the latest turn uses it. */
     const sessionHistory = sessionTailHistory;
     const turnFacts = useSessionTurnFacts(conversationView);
-    const conversationIndexRows = useConversationIndexRows(conversationView);
+    const conversationIndexRows = useConversationIndexRows(conversationView, {
+      includeSummary: false,
+    });
     const [lastCompletedAssistantTarget, setLastCompletedAssistantTarget] = useState<{
       sessionId: SessionId;
       messageId: string | null;
@@ -3470,7 +3455,6 @@ export const SessionChatInterface = memo(
     const editableLastUserMessageId = useMemo(() => {
       if (
         session.isArchived ||
-        session.autoReview ||
         isGoalActive ||
         session.cliType !== 'builtin' ||
         (session.agentType !== 'codex' && session.agentType !== 'claude')
@@ -3515,7 +3499,6 @@ export const SessionChatInterface = memo(
       isGoalActive,
       session.agentConfigId,
       session.agentType,
-      session.autoReview,
       session.cliType,
       session.isArchived,
       sessionHistory,
@@ -3950,6 +3933,7 @@ export const SessionChatInterface = memo(
           const history = conversationCopyRange(await conversationView.readAll(), throughMessageId);
           const last = history.at(-1);
           const { markdown, stats } = buildConversationMarkdown({
+            workspaceId: workspaceId ?? undefined,
             history: history as Parameters<typeof buildConversationMarkdown>[0]['history'],
             title: session.title ?? undefined,
             source: conversationCopySource,
@@ -3997,6 +3981,7 @@ export const SessionChatInterface = memo(
         captureSessionEvent,
         conversationCopyParticipants,
         conversationCopySource,
+        workspaceId,
         session.title,
         conversationView,
         postHog,
@@ -4775,8 +4760,6 @@ export const SessionChatInterface = memo(
       ]
     );
 
-    const autoReview = useAutoReview(session?.id, session);
-
     const handleContinueDiscussingProposedPlan = useCallback(() => {
       if (!latestCompletedProposedPlan) {
         return;
@@ -5294,10 +5277,14 @@ export const SessionChatInterface = memo(
       [docMetaCacheReady, openerRootSessionMeta, openerSessionMeta, session]
     );
     const handleOpenRelatedSession = useCallback(
-      (target: SessionNavigationTarget) => {
+      (target: SessionNavigationTarget & { workspaceId?: string }) => {
+        if (target.workspaceId && target.workspaceId !== workspaceId) {
+          openSessionDeepLink(target);
+          return;
+        }
         onNavigateSession?.(target);
       },
-      [onNavigateSession]
+      [onNavigateSession, workspaceId]
     );
     const openedByRelations = useMemo<SessionOpenedByMenuState | undefined>(() => {
       const opened = openedSessions.map((item) => ({
@@ -5757,15 +5744,20 @@ export const SessionChatInterface = memo(
         cancel_turn_id: turnIdToCancel,
         goal_thread_id: goalToPause?.threadId ?? null,
       };
-      captureSessionEvent('session/stop_requested', stopAnalyticsProperties);
+      const stopStartedAtMs = getPerformanceNowMs();
       try {
         await requestSessionCancel(session.id, turnIdToCancel);
-        captureSessionEvent('session/stop_request_succeeded', stopAnalyticsProperties);
+        // The request helper resolved; this does not acknowledge a stopped turn.
+        captureSessionEvent('session/stop_request_succeeded', {
+          ...stopAnalyticsProperties,
+          duration_ms: getDurationSinceMs(stopStartedAtMs),
+        });
       } catch (error) {
         console.error('Failed to request session cancel', error);
         pendingUserInterruptRef.current = false;
         captureSessionEvent('session/stop_request_failed', {
           ...stopAnalyticsProperties,
+          duration_ms: getDurationSinceMs(stopStartedAtMs),
           error_name: error instanceof Error ? error.name : typeof error,
           error_message: getErrorMessage(error),
         });
@@ -5934,19 +5926,18 @@ export const SessionChatInterface = memo(
 
     const handleReorderQueueItem = useCallback(
       async (activeCid: string, overCid: string) => {
+        const startedAtMs = getPerformanceNowMs();
         try {
-          captureSessionEvent('session/queue_item_reorder_requested', {
-            queue_item_id: activeCid,
-            over_queue_item_id: overCid,
-          });
           await reorderMessageQueueItem(activeCid, overCid);
           captureSessionEvent('session/queue_item_reordered', {
+            duration_ms: getDurationSinceMs(startedAtMs),
             queue_item_id: activeCid,
             over_queue_item_id: overCid,
           });
         } catch (error) {
           console.error('Failed to reorder queued message', error);
           captureSessionEvent('session/queue_item_reorder_failed', {
+            duration_ms: getDurationSinceMs(startedAtMs),
             queue_item_id: activeCid,
             over_queue_item_id: overCid,
             error_name: error instanceof Error ? error.name : typeof error,
@@ -6388,14 +6379,17 @@ export const SessionChatInterface = memo(
 
     const handleCopySessionLink = useCallback(async () => {
       try {
-        await navigator.clipboard.writeText(getAppShareUrl());
+        if (!workspaceId) throw new Error('Workspace is not ready');
+        await navigator.clipboard.writeText(
+          buildSessionLink({ sessionId: session.id, workspaceId })
+        );
         captureSessionEvent('session/share_link_copied');
         toast.success(t('sessions.urlCopied', 'Session URL copied to clipboard'));
       } catch {
         captureSessionEvent('session/share_link_copy_failed');
         toast.error(t('sessions.shareFailed', 'Unable to share link'));
       }
-    }, [captureSessionEvent, t]);
+    }, [captureSessionEvent, t, session.id, workspaceId]);
 
     const headerGitHubActions = headerActionsSlot !== undefined ? headerActionsSlot : prBadge;
 
@@ -6526,7 +6520,6 @@ export const SessionChatInterface = memo(
                 });
               }
         }
-        onOpenReviewSettings={() => openSettings('preferences')}
         owner={ownerMenuState}
         openedByRelations={openedByRelations}
         onArchive={onArchiveSession}
@@ -6567,7 +6560,7 @@ export const SessionChatInterface = memo(
 
     return (
       <PrLinkProvider prUrl={latestPr?.url} onOpenPrTab={prLinkHandler}>
-        <SessionLinkProvider value={onNavigateSession ? handleOpenRelatedSession : null}>
+    <SessionLinkProvider enabled={!!onNavigateSession}>
           {isVisible &&
             !preparingWindow &&
             onOpenBrowser &&
@@ -6766,39 +6759,6 @@ export const SessionChatInterface = memo(
                     <NotificationPermissionPrompt
                       sessionCompleted={session.status?.type === 'idle' && !isSessionWorking}
                     />
-
-                    {/* An active auto-review run states itself here rather than
-                      only in the "…" menu: the failure mode worth designing
-                      against is a user who ticked the box days ago, forgot, and
-                      then finds a pull request merged itself. */}
-                    {autoReview.run && autoReview.active ? (
-                      <ConversationColumn {...stylex.props(styles.reviewStatusColumn)}>
-                        <AutoReviewStatus
-                          run={autoReview.run}
-                          maxRounds={autoReview.run.policy.budget.reviewRounds}
-                          onDisable={() => {
-                            void autoReview.disable();
-                          }}
-                          onConfirmMerge={() => {
-                            void autoReview.confirmMerge();
-                          }}
-                          onResume={() => {
-                            void autoReview.resume();
-                          }}
-                          onFixFinding={(finding) => {
-                            void dispatchPrompt(
-                              buildAuthorFixPrompt([finding], {
-                                // Same reason as the engine's own dispatch: with a
-                                // PR open, a committed-but-unpushed fix is invisible
-                                // to everything that reads the PR head.
-                                hasPullRequest: hasExistingPr,
-                              }),
-                              executionTurnConfigOverrides
-                            );
-                          }}
-                        />
-                      </ConversationColumn>
-                    ) : null}
 
                     {/* Session info bar (desktop AND mobile): the canonical
                       cluster + fixed stage row merging status, goal, schedule,

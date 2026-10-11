@@ -63,6 +63,18 @@ binding, and a parity test asserting the CLI resolution equals
 The MCP suite keeps its original coverage with only the sync-reason string
 updated.
 
+After integrating current `main` for [PR #1286](https://github.com/LodyAI/Lody/pull/1286),
+the Role resolver, MCP server and session command suites pass all 149 tests.
+Conflict resolution retains the retired Review agent removal and the relocated
+CLI reference links, alongside the Role option. The merged command continues
+through the current attachment preparation and frozen-input creation path.
+
+Typechecking, lint, boundary checks, formatting and documentation checks pass.
+The full check encountered two host-environment failures outside this change:
+macOS `/var` versus `/private/var` in the worktree query test, and the injected
+Git credential wrapper in the native transport test. Both suites pass (25 tests)
+with a canonical temporary directory and the wrapper removed from the test process.
+
 Not verified: an end-to-end `lody session create --agent-role` run against a
 live workspace (no commander-level harness exists for this command, matching
 the existing unit-test-only coverage of the other create flags).

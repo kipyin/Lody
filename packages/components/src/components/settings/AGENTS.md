@@ -46,8 +46,9 @@ rolls back — is in the root [AGENTS.md](../../../../../AGENTS.md).
 - Agent configuration lives in `agent-config-dialog.tsx` plus `env-vars-textarea.tsx`.
   DeepSeek Harness official vs custom endpoint is dialog form state only: persist
   `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` (official always writes
-  `https://api.deepseek.com`) and never a new AgentConfigMeta field. Model ids come from
-  the endpoint's OpenAI-compatible discovery response during live verification; do not
+  `https://api.deepseek.com/anthropic`) and never a new AgentConfigMeta field. Model ids come from
+  the endpoint's OpenAI-compatible discovery response during live verification; official
+  Messages and legacy Chat roots share the provider's official `/models` endpoint. Do not
   add a parallel manual catalog field. Additional env cannot override either connection
   key, and changing endpoint or credential invalidates the dialog's prior live
   verification.
@@ -61,7 +62,10 @@ rolls back — is in the root [AGENTS.md](../../../../../AGENTS.md).
   names stay on the default interface font. Five tiers write `--ui-font-size`;
   sizes use `@lody/ui` text tokens. Font ligatures in the Text group writes
   `--lody-font-ligatures` for conversation, code, and tool output.
-- The Codex reset forecast chip in the provider row must not fetch on mount:
+- Provider rows show identity, read-only remaining quota, a direct flat forecast
+  action, and a persistent Provider `…` menu. The forecast action opens its dialog
+  in one step; no quota-details interstitial or forecast probability belongs in
+  the overview. Listing rows does not fetch forecasts:
   [../codex-reset/AGENTS.md](../codex-reset/AGENTS.md).
 - The usage share card is a fixed-format report, not a second `ChatShareCard`:
   fixed aspects, period = page range, headline = range total.

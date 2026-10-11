@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -13,6 +13,7 @@ import { spawn } from 'node:child_process';
 
 import {
   getAcpCapabilitySourceVersion,
+  mergeACPProcessEnv,
   mergeLoginShellEnv,
   resolveACPSetting,
   resolveExpectedAcpCapabilitySourceVersion,
@@ -241,7 +242,7 @@ describe('resolveBuiltinACPSetting', () => {
           '--package',
           `@deepseek-ai/dsh-base@${DEEPSEEK_HARNESS_VERSION}`,
           '--package',
-          `@deepseek-ai/dsh-agent-presets@${DEEPSEEK_HARNESS_VERSION}`,
+          `@deepseek-ai/dsh-agent-preset-registry@${DEEPSEEK_HARNESS_VERSION}`,
           '--package',
           `@deepseek-ai/dsh-mcp-client@${DEEPSEEK_HARNESS_VERSION}`,
           'node',
@@ -269,37 +270,36 @@ describe('resolveBuiltinACPSetting', () => {
       const profileName = runtimeArgs[profileFlag + 1];
       expect(profileName).toBeTruthy();
       const profileDir = join(dshHome, 'profiles', profileName!);
-      const packageJson = await readFile(join(profileDir, 'package.json'), 'utf8');
-      const patch = await readFile(join(profileDir, 'cordis.patch.yml'), 'utf8');
-      expect(packageJson).toContain('@deepseek-ai/dsh-base');
-      expect(patch).toContain('deepseek-acp.js');
-      expect(patch).not.toContain("name: '@deepseek-ai/dsh-agent-spine-demo'");
-      expect(patch).toContain("name: '@deepseek-ai/dsh-agent-presets'");
-      expect(patch).toContain("name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'");
-      expect(patch).toContain('compression: zstd');
-      expect(patch).toContain('defaultPreset: workspace-write');
-      expect(patch).toContain('reasoningEffort: "max"');
-      expect(patch).toContain('model: "deepseek-flash"');
+      expect(await readdir(profileDir)).toEqual(
+        expect.arrayContaining([
+          'package.json',
+          'cordis.yml',
+          'cordis.patch.yml',
+          'pnpm-workspace.yaml',
+        ])
+      );
     } finally {
       vi.unstubAllEnvs();
       await rm(dshHome, { recursive: true, force: true });
     }
   });
 
-  it('resolves Dimcode to a pinned npx ACP launch understood by cache recovery', async () => {
+  it('launches the user-installed Dimcode without npx or automatic updates', async () => {
     for (const extraArgs of [undefined, ['--verbose']]) {
       const input = { cliType: 'builtin' as const, agentType: 'dimcode', extraArgs };
       const launch = await resolveACPProcessLaunchAsync(input);
       expect(launch).toEqual({
-        command: 'npx',
-        args: ['--prefer-offline', '-y', 'dimcode@0.5.10', 'acp', ...(extraArgs ?? [])],
+        command: 'dimcode',
+        args: ['acp', ...(extraArgs ?? [])],
+        env: { DIMCODE_DISABLE_AUTOUPDATE: '1', DIMCODE_AUTOUPDATE: '0' },
         capabilitySourceVersion: getAcpCapabilitySourceVersion(input),
       });
-      expect(parseNpxPackageSpecFromArgs(launch.args)).toEqual({
-        name: 'dimcode',
-        version: '0.5.10',
+      expect(launch.capabilitySourceVersion).toBe('builtin-dimcode:local-acp');
+      expect(mergeACPProcessEnv(launch, { DIMCODE_AUTOUPDATE: '1', PATH: '/user/bin' })).toEqual({
+        PATH: '/user/bin',
+        DIMCODE_DISABLE_AUTOUPDATE: '1',
+        DIMCODE_AUTOUPDATE: '0',
       });
-      expect(launch.capabilitySourceVersion).toBe('builtin-dimcode:0.5.10');
     }
     expect(() => resolveBuiltinACPSetting('dimcode')).toThrow(/resolveACPProcessLaunchAsync/);
   });

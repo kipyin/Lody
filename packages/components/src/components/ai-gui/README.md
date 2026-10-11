@@ -37,6 +37,9 @@ the reasoning behind those rules.
   [Decision and synthetic acceptance evidence](../../../../../.agents/notes/implemented/bug-fix/2026-10-07-session-search-literal-punctuation.md).
   Conversation paragraphs use start alignment during and after streaming; see
   [conversation Markdown alignment](../../../../../specs/conversation-markdown-alignment.md).
+  Rendering and search extraction share CJK-friendly emphasis parsing, so bold
+  sentences ending in punctuation can touch subsequent prose without exposing
+  their markers; see [CJK emphasis](../../../../../specs/markdown-cjk-emphasis.md).
   `markdown-code-block.tsx` owns fenced
   blocks, wrap, and Markdown-fence preview (`markdown-code-highlight.ts` the Shiki
   tokens); `markdown-diff-block.tsx` is the inline diff; `markdown-mermaid-block.tsx`
@@ -45,10 +48,16 @@ the reasoning behind those rules.
   pure zoom/pan geometry, and `mermaid-diagram-viewer.tsx` the full-screen
   surface. Invariants live in
   [mermaid-diagram-rendering.md](mermaid-diagram-rendering.md).
-- A `[Title](session://<id>)` link (the form session mentions reach the agent in)
-  renders as a conversation chip. `session-link-context.tsx` supplies the Session
-  navigation from `SessionChatInterface`; without it, or on a read-only share, the
-  chip is inert.
+- A `[Title](lody://session/<id>?workspace=<id>)` link (or legacy `session://<id>`)
+  renders as a conversation chip. `SessionChatInterface` enables
+  `session-link-context.tsx`'s explicit-target deep-link dispatch for both same-
+  and cross-workspace links. Ordinary related-session navigation remains separate
+  so its last-active-tab restoration cannot override a resource destination.
+  Without live navigation, or on a read-only share, the chip is inert.
+  Message/plan copy and UI/CLI Markdown exports normalize prose references using
+  shared `session-link-export`, preserving code examples and stored history.
+  Only a known source workspace supplies a missing ID; anonymous readers do not
+  borrow the viewer's workspace.
 - `message-content-guards.ts` gates which shared `MessageContent` variants render.
 - `markdown-file-image.tsx` binds live file Markdown to its owning provider. Local
   resources load automatically; remote file images show a one-line recessed slot

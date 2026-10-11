@@ -1,0 +1,292 @@
+# Effect TS in the CLI
+
+How `apps/cli` code uses [Effect](https://effect.website) and how Effect code
+meets the Promise code it has not replaced yet. The migration order and the
+layer map live in the
+[lifecycle migration roadmap](../notes/proposed/architecture/2026-09-27-effect-lifecycle-migration-roadmap.md);
+binding rules for already-migrated directories live in their `AGENTS.md`
+(for example [the shared process layer](../../packages/shared/src/node/AGENTS.md)).
+The catalog pins `effect` and `@effect/vitest` to 4.0.2. The [v4 migration
+record](../notes/implemented/architecture/2026-10-09-effect-v4-migration.md)
+explains version selection and the preserved lifecycle behavior.
+
+## Version-matched reference
+
+Use the repository [Effect skill](../skills/effect-ts/SKILL.md) before Effect work.
+Resolve the dependency from the consuming package, read its `effect/AGENTS.md`
+completely, then follow its required links and search `ai-docs`/`src` as needed.
+A root `node_modules/effect` path is not guaranteed in this pnpm workspace.
+Use the [migration skill](../skills/effect-v3-to-v4/SKILL.md) for an explicit v3
+migration. Both retain Lody's locked-version and behavioral acceptance rules.
+The [reference decision](../notes/implemented/process/2026-10-11-effect-reference-skills.md)
+explains why a tracked Effect subtree is not currently recommended.
+
+## When to use Effect
+
+- New modules and services: a `Context.Service` for the capability, a `Layer` for
+  each implementation, `Effect.provide` at the composition point.
+- Errors: `Data.TaggedError` values and `Effect.catchTag`, not `try`/`catch`
+  on unknown exceptions.
+- Resources with a lifetime: `Effect.acquireRelease`, `Scope`, `RcMap`.
+- Concurrency: fibers, `Semaphore`, `Deferred`, `FiberMap`/`FiberSet`, not
+  promise chains, `Map`s of in-flight promises, or `AbortController`s.
+- Retries, polling and deadlines: `Schedule`, `Effect.timeout*`, `Effect.sleep`,
+  not `setTimeout`/`setInterval` loops.
+
+Raw `async`/`await` remains fine for thin glue at process entry points,
+synchronous code without error handling, and hot paths where a measurement shows
+Effect overhead matters (the per-token ACP update path, CRDT import/export).
+
+## Rules at the Promise boundary
+
+- Never call `Effect.run*` inside an Effect. Run programs only at an entry point
+  or in a temporary facade (below).
+- Wrap promises that can reject with `Effect.tryPromise({ try: (signal) => ...,
+catch })` and pass the signal on, so interruption aborts the work.
+  `Effect.promise` turns a rejection into a defect.
+- Surface failures to Promise callers as the typed error itself: run with
+  `Effect.runPromiseExit` and throw `Cause.squash(exit.cause)`, not the
+  `FiberFailure` wrapper `Effect.runPromise` rejects with. For programs owning
+  processes, use `squashProcessFailure`: plain `Cause.squash` can discard a
+  simultaneous release defect and its recovery lease.
+- An interrupt is owned by a scope or awaited. `void Effect.runPromise(Fiber.interrupt(f))`
+  returns before the fiber's finalizers run.
+- Put a timeout on the waiter, not on uninterruptible work:
+  `Fiber.await(raw).pipe(Effect.timeoutOrElse(...))`. `Effect.timeout` around an
+  uninterruptible region waits for that region to finish anyway.
+- Bound every wait inside a finalizer. Finalizers are uninterruptible, so an
+  unbounded wait there can hang shutdown.
+- `FiberMap.run` with an existing key interrupts the old fiber without waiting
+  for its finalizers; interrupt and await it yourself when the two must not
+  overlap.
+- A second `Scope.close` returns without waiting for the first close's
+  finalizers; share one memoized close when several callers can end a scope.
+- Subscribe to Node events in the same synchronous step as the call that
+  produces them (inside an `Effect.callback` register function, or a synchronous
+  `onSpawned` hook). A listener attached after a fiber yield can miss an event
+  that already fired.
+
+## Login-shell probes and application-owned cache
+
+`LoginShellEnvironmentLive` injects host selection and the existing official
+process service. Candidate shells share one Clock deadline; core composition
+never executes. `LoginShellCacheLive` owns one producer in a child Scope and
+retains its complete Exit for later readers. CLI readers retain their 3-second
+pending-overlay behavior; cancellation and timeout affect only that local reader.
+Application shutdown rejects new readers, interrupts and joins the producer, then
+closes its child Scope. Process cleanup keeps its own bounded backend and recovery
+leases. There is no Promise cache, cache timer or independent shell-probe runner.
+
+CLI index and Electron startApplication each compose the application's first
+long-lived native service through makeApplicationRuntime. Concurrent disposal joins
+one receipt; failed disposal retains the original ownership Cause across failed
+recovery attempts. Replacement is allowed only after release is confirmed.
+CLI graceful/one-shot/fatal exits await that owner; failed graceful cleanup exits
+with a failure code. Electron stops it inside the existing quit barrier after
+renderer unload approval, and a later quit retries unresolved resources.
+Remaining launchers use the visible getLoginShellEnvLegacy,
+getCachedLoginShellEnvSyncLegacy and getUserShellEnvCachedLegacy accessors.
+probeLoginShellEnvLegacy and the test-only reset facade are deleted. Remove the
+remaining accessors/binding bridge once launchers receive LoginShellCache directly.
+This first application runtime does not migrate the remaining Session/Turn/Loro
+owners or establish end-to-end daemon shutdown. See the
+[decision and limits](../notes/implemented/architecture/2026-10-10-effect-login-shell-probe.md).
+
+## Process service and resource ownership
+
+Use `ChildProcess` and `ChildProcessSpawner` from `effect/process`. The shared
+`ProcessSpawnerLive` implements the official service with Lody's bounded tree
+policy and official Node Stream/Sink adapters. `processLayer` composes it with
+`NodeProcess`; the CLI's `platformLayer` also supplies its logger. `runCommand`
+requires the official spawner, and `spawnProcess` requires Scope. See the
+[backend decision](../notes/implemented/architecture/2026-10-09-effect-official-process-service.md)
+for why the default Node spawner is not used unchanged.
+
+If bounded Scope termination fails, its Exit contains a `ProcessReleaseFailed`
+defect with a recovery lease for the unresolved tree. The owner retains that
+lease, observes `isAlive` and retries `retryTermination` before declaring the tree
+gone. Scope closure itself is already finished and cannot perform that retry.
+`squashProcessFailure` preserves all these leases when an unmigrated Promise
+boundary also has a body error. This tree recovery does not certify drained stdio
+or complete Session shutdown. See the
+[release decision](../notes/implemented/bug-fix/2026-10-10-effect-process-release-failure.md).
+
+In pinned 4.0.2, `Effect.mapError` selects a typed failure and can discard other
+reasons in a mixed Cause. Resource-owning error conversions use `catchCause` and
+`failCause(Cause.map(...))` to retain defects and interruptions. In particular,
+failed process acquisition can already have closed its child Scope: its release
+lease must reach the caller alongside the setup failure.
+
+Never wrap the shared Promise functions back into an Effect. A runner creates a
+separate root fiber. For an unmigrated entry point, the shared facade accepts an
+explicit AbortSignal; pass it when the entry point supports cancellation. This
+neither supplies structured Effect ownership nor automatically makes its parent
+wait for cleanup. Native Effect callers yield the service directly.
+
+A Session owns a container Scope. Each spawn uses a child Scope: failed or
+interrupted setup closes it before returning; successful setup retains it until
+whole-group exit and drained stdio. Closing the container Scope terminates its trees and stops its
+monitor fibers, then removes cgroup resources. `startProcessLegacy` is reserved for
+legacy synchronous/raw Node handles (including IPC and explicit detach), whose
+owner must await `terminate`; it is not a scoped Effect API.
+
+## Local-project Git
+
+`LocalProjects` / `LocalProjectsLive` own native repository observation and branch
+workflows. Their dependencies are `LocalProjectPaths` (official FileSystem),
+`LocalProjectHost` (an Effect reading each command's environment), and the official
+process spawner. `localProjectLayer` only composes Layers. Existing CLI command,
+control, session and worktree-observation entrypoints execute this same kernel
+through the one deprecated `localProjectsLegacy` facade. Keep that name visible;
+new Effect callers yield native methods. Remove the facade when those application
+owners provide LocalProjects. Its synchronous identity methods remain blocking.
+Expected Git absence remains a domain result; process, deadline, corruption,
+filesystem and release failures propagate. This does not complete worktree
+setup/GC or the daemon's root runtime. Decision and limits:
+[local-project Git](../notes/implemented/architecture/2026-10-10-effect-local-project-git.md).
+
+## File locks
+
+`withFileLock(name, body, options)` requires `FileLocks`. `FileLocksLive` captures
+official FileSystem, native NodeProcess and FileLockHost dependencies. The host
+fixes pid and resolves the default lock directory on each operation; tests may
+inject a fixed directory.
+`fileLockLayer` supplies Node implementations at composition. One service instance
+owns local Ref/Deferred admission and unresolved releases; each operation owns its
+candidate and acquired file. Release waits have their own 5-second Clock bound;
+`LockReleaseFailed.cleanup` retains the original OS deletion for awaited retry.
+A still-pending deletion blocks replacement. Body and release run outside acquisition
+retry; `squashFileLockFailure` preserves their full Cause, file cleanup owners and
+process recovery leases at compatibility boundaries. See the [decision and preserved lock policy](../notes/implemented/architecture/2026-10-10-effect-file-lock-lifecycle.md).
+
+Catalog mutations compose the native API and require FileLocks. Existing Promise
+application entrypoints execute them through `fileLocksLegacy.runPromise`; worktree,
+cloudflared and Baguette use its `withLock` callback adapter. This one deprecated
+facade shares a process-lifetime ManagedRuntime so local queue waiting retains its
+old deadline meaning. Remove it when those entrypoints use the daemon runtime.
+Catalog read caching, worktree setup/GC and downloads are still under migration.
+Local-project Git is native as described above; full worktree ownership is separate.
+## Worktree Git execution
+
+`WorktreeGit` / `WorktreeGitLive` own native command execution, status checking and
+bounded credential-helper protocol. Layers provide official FileSystem, the process
+spawner and a per-command environment Effect. Each command owns its process Scope;
+the service has no background work. `worktreeGitLayer` only composes dependencies.
+The Promise manager uses the one deprecated `worktreeGitLegacy` facade; remove it
+when the manager composes this service. That facade uses the shared complete-Cause
+projection. Transport, cancellation and unresolved releases escape manager fallback
+catches. Preserve mixed Fail/Die Cause when mapping commands on pinned v4; ordinary
+mapError can select only the Fail reason. This is not native manager/setup/GC or
+daemon runtime completion. Decision:
+[worktree Git](../notes/implemented/architecture/2026-10-10-effect-worktree-git-execution.md).
+
+## Worktree observations
+
+`WorktreeObservations` composes official FileSystem, WorktreeGit and the owning
+FileLocks instance. Inspection/listing acquire the repo lease; information reads
+inside mutations reuse their caller's lock. Failed Git observations do not become
+phantom dirty records or null HEAD. Queued cancellation and command cleanup remain
+structured inside this kernel. The Promise manager's `runObservationLegacy` composes through `runWorktreeLegacy`,
+which executes in the existing `fileLocksLegacy` runtime, with no second lock coordinator.
+Delete it when the mutation owner receives native services. Synchronous manager
+path/existence methods, setup, GC and the daemon runtime still need migration. See
+[the decision](../notes/implemented/architecture/2026-10-10-effect-worktree-observations.md).
+
+## Temporary Promise facades
+
+A migrated layer is consumed by callers that are still Promise-based. Such a
+caller reaches the new service through a facade: the process layer's own
+facades at the end of `packages/shared/src/node/process.ts`, which the CLI
+uses directly with options composed by `apps/cli/src/platform/process-options.ts`.
+They provide the service Layers and apply the failure rule above. A facade is temporary:
+it is deleted when its caller migrates, and it never appears inside an already
+migrated layer. Current facades:
+
+| Facade                                                                                                                                                                                                                                                                                                                                                                         | Used by                                                                                                 | Replaced when                                               |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `apps/cli/src/session/session-sandbox.ts` (`SessionSandbox`)                                                                                                                                                                                                                                                                                                                   | `Session`, `TerminalManager`                                                                            | the session resource layer owns process containers directly |
+| `terminateAcpProcessTree` in `apps/cli/src/agent/acp-runner.ts`                                                                                                                                                                                                                                                                                                                | auxiliary ACP agents                                                                                    | auxiliary ACP agents become scoped processes                |
+| `runCommandTextLegacy` / `runCommandTextSyncLegacy` / `startProcessLegacy` / `terminateChildTreeLegacy` / `signalChildTreeNowLegacy` / `isPidAliveSyncLegacy` / `probePidSyncLegacy` and the runners `makeProcessRunnerLegacy` / `runPromiseSquashedLegacy` in `@lody/shared/node/process` (CLI: `process-options.ts` composes its logger; worker bundles use shared defaults) | every other process caller in the CLI, Electron main, the CLI supervisor and `packages/shared/src/node` | each caller's own layer migrates                            |
+| `terminatePtyProcessGroup` in `apps/cli/src/lib/terminal-pty-service.ts`                                                                                                                                                                                                                                                                                                       | local terminal PTYs                                                                                     | terminal/PTY ownership becomes an Effect layer              |
+
+`pnpm check:cli-process-boundary` fails when code in those packages bypasses
+these and reaches `child_process`, `cross-spawn`, `node-pty`, `process.kill` or
+a child's `kill` directly.
+
+Session credential acquisition also has a temporary `acquireSessionCredentialsLegacy`
+facade (`session/session-credentials.ts`): the Effect broker lease's scope follows
+preparation into the live Session and closes on failure/termination. The separate
+`makePreparationControlLegacy` facade owns only the preparation TTL and its awaited
+close receipt. Claim stops that control without closing runtime resources. These
+are bounded resource migrations; Session/ACP/worktree Promise orchestration has
+not become Effect-native merely by using these facades.
+
+Execution facades carry a `Legacy` suffix and `@deprecated`; keep that suffix
+visible in imports and calls. New Effect workflows compose core APIs and leave
+execution to their owning application entry point. Layer builders and pure error
+conversions retain their names because they do not execute a program. Current
+shared execution facades are:
+
+- `runCommandTextLegacy` and `runCommandTextSyncLegacy`: text output for Promise
+  and blocking callers, respectively.
+- `startProcessLegacy`: raw Node handle with manual ownership
+  (`ProcessHandleLegacy`).
+- `terminateChildTreeLegacy` and `signalChildTreeNowLegacy`: awaited tree cleanup
+  and synchronous exit-hook signalling, respectively.
+- `isPidAliveSyncLegacy` and `probePidSyncLegacy`: synchronous process probes.
+- `makeProcessRunnerLegacy` (`ProcessRunnerLegacy`) and `runPromiseSquashedLegacy`:
+  temporary execution and error conversion for Promise entry points.
+
+`runCommand`, `runCommandOk`, their Effect-returning Sync variants, `spawnProcess`,
+`terminateTree`, `childProcessTree`, `isPidAlive` and `probePid` retain their names.
+The guard rejects retired facade imports/exports and aliases that hide Legacy.
+
+## Testing
+
+- Use `@effect/vitest` (`it.effect`, `it.live`) with `TestClock` from
+  `effect/testing`. `it.effect` supplies a Scope and test services; v4 has no
+  separate `it.scoped`. Use `TestClock.adjust` to drive time. Fork the program, adjust the clock, then
+  join or await the fiber.
+- Replace services with test Layers or `Effect.provideService`, and assert the
+  resulting state (which processes are alive, what was written), not how often a
+  mock was called. `@lody/shared/node/process-testing` models the OS process
+  table for the process layer.
+- `vi.useFakeTimers()` with default options also fakes the timers Effect's
+  clock uses. It drives Effect sleeps only when the test advances timers
+  (`vi.advanceTimersByTimeAsync`); prefer `TestClock` for Effect-first code.
+
+## v4 API choices
+
+- Define capabilities with `Context.Service<Self, Api>()(id)`. `Layer.effect`
+  builds both ordinary and scoped implementations; acquisition can require Scope.
+- Use `Effect.forkChild` for child-owned work, `Effect.forkIn` for an explicit
+  Scope, and `Effect.forkDetach` only when ownership is managed explicitly. The
+  taskkill deadline uses the last form and always interrupts and awaits it.
+- Use `Scope.provide(program, scope)` when an existing scope owns a program.
+  Context-based runners are `Effect.runForkWith(services)`, not a v3 Runtime.
+- `Effect.result` returns `Result` (`Success.success` / `Failure.failure`);
+  `Effect.catch` handles typed errors. Timeout errors use the tag `TimeoutError`.
+- `Cause` contains a flat `reasons` array. Use `findErrorOption`,
+  `hasInterrupts` or `hasInterruptsOnly` according to the intended check.
+- `Schedule.min([exponential, spaced])` caps a backoff; `Schedule.while` receives
+  schedule metadata, whose `input` is the failure being retried.
+- `Effect.yieldNow` is an Effect value, not a function. Use `Effect.sleep` and
+  `Duration.Input` / `Duration.fromInputUnsafe` for delays.
+- ScopedCache operations are module functions. In 4.0.2 bulk disposal joins
+  finalizer Exits without propagating their failures; owners that promise to
+  report cleanup failures must collect them explicitly.
+
+API reference: [official migration guide](https://github.com/Effect-TS/effect/blob/main/MIGRATION.md).
+Use the pinned package's declarations to verify details: the upstream guide can
+advance beyond the installed release.
+
+
+## Local worktree preparation
+
+`LocalWorktreePreparation` composes official FileSystem, WorktreeGit and Clock under
+an already-held mutation lease. It owns the metadata scratch directory before
+writing and publishes only a complete file. Failed five-second cleanup retains a
+bounded recovery Effect. The manager's `runWorktreeLegacy` preserves primary and
+scratch release failures through the existing fileLocksLegacy runtime. Delete the
+executor when native mutations receive services; bare clone/fetch, setup and GC
+remain outside this finite unit. See the [decision](../notes/implemented/architecture/2026-10-10-effect-local-worktree-preparation.md).

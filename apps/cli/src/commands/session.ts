@@ -1,3 +1,8 @@
+import { normalizeSessionTurnInputConfig } from '@lody/shared';
+import { prepareSessionInputAttachments } from '@/lib/session-input-attachments';
+import { buildCommandInputBlocks, type SessionInputAttachment } from '@/lib/session-input-content';
+import { createCommandAttachmentTransfer } from '@/lib/cloud-cli-port';
+import { inputBlocksToHistoryItems, type SessionInputBlock } from '@lody/shared';
 import { resolveSessionConversationConfig } from '@lody/shared';
 import type { MessageAuthor, AgentMessageAuthor } from '@lody/shared';
 import {
@@ -6,6 +11,7 @@ import {
   getModelEffortChoices,
   machineSupportsPreparedSessionInputProtocol,
   machineSupportsMemoryProviders,
+  resolveNewSessionHistoryBackend,
 } from '@lody/shared';
 import {
   materializePreparedSessionInput,
@@ -24,21 +30,11 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { v4 as uuidV4 } from 'uuid';
 import {
-  createLoroStreamsJsonStreamClient,
-  LORO_STREAMS_RPC_RETENTION_SECONDS,
-  LORO_STREAMS_RPC_VERSION,
-  LoroStreamsMachineRpcClient,
-} from '@lody/loro-streams-rpc';
-import {
-  getLocalProjectGitStateAtRootPath,
-  normalizeLocalProjectRootPath,
-  resolveLocalProjectBranchAtRootPath,
+  localProjectsLegacy,
   selectLocalProjectBranchSelector,
 } from '@lody/shared/node/local-project';
 import {
   type ACPSessionConfig,
-  getLoroStreamsShardUrls,
-  LORO_STREAMS_BUCKET_ID,
   type MessageContent,
   MachineStatusResponseSchema,
   SessionCancelResponseSchema,
@@ -83,6 +79,7 @@ import {
   type ProjectRef,
   type SessionHistory,
   type SessionHistoryInput,
+  type SessionHistoryBackendKind,
   type SessionQuotaKind,
   type SessionTurnInputConfig,
   type SessionId,
@@ -93,10 +90,11 @@ import {
   NEW_SESSION_HISTORY_BACKEND,
 } from '@lody/shared';
 import type { SessionTurn } from '@lody/shared/session-data';
-import { prepareCliStreamsGatewayBaseUrl } from '@/lib/loro/streams-access';
 import { AuthClient } from '@/lib/auth';
 import {
   dispatchLocalControl,
+  createCommandSessionHistoryFactory,
+  withMachineRpcClient,
   ensureWorkspaceMetaSynced,
   listAliveDocMetas,
   listAliveSessionMetas,
@@ -144,7 +142,6 @@ import { flushTelemetry } from '@/instrument';
 import { captureSessionCommandEvent } from './analytics-events';
 import { LODY_AUTH_SITE_URL, LODY_AUTH_URL } from '@/utils/const';
 import { createCloudBillingPort, createCloudStreamsTokenPort } from '@/lib/cloud-cli-port';
-import { getCliHttpFetch } from '@/utils/http-transport';
 import { readMachineAccessWithBoundedRetry } from '@/session/session-access-retry';
 import { createSessionBackend } from '@/session/session-backend';
 import { Effect } from 'effect';
@@ -169,13 +166,22 @@ export const MAX_MCP_SESSION_LIST_LIMIT = 200;
 export const DEFAULT_SESSION_HISTORY_LIMIT = 50;
 export const MAX_MCP_SESSION_HISTORY_LIMIT = 200;
 
+const parseSessionHistoryBackend = (value: string): SessionHistoryBackendKind => {
+  if (value !== 'loro' && value !== 'roost') {
+    throw new Error(`Unsupported session history backend: ${value}`);
+  }
+  return value;
+};
+
 type PromptOptions = {
+  attach?: string[];
   prompt?: string;
   promptFile?: string;
 };
 
 export type CreateOptions = CommonOptions &
   PromptOptions & {
+    inputAttachments?: SessionInputAttachment[];
     title?: string;
     machine?: string;
     agent?: string;
@@ -200,6 +206,8 @@ export type CreateOptions = CommonOptions &
     env?: string[];
     wait?: boolean;
     timeout?: number;
+    /** Explicit history backend selection for this session. */
+    historyBackend?: SessionHistoryBackendKind;
     /** Stable ids preallocated by durable orchestration recovery. */
     sessionId?: SessionId;
     userTurnId?: string;
@@ -712,6 +720,8 @@ async function readPromptText(
     }
   }
 
+  if (options.attach?.length) return '';
+
   throw new Error(
     'Missing prompt. Pass a positional prompt, --prompt, --prompt-file, or pipe stdin.'
   );
@@ -865,21 +875,23 @@ async function withWorkspaceManager<T>(
     throw new Error('Cloud session commands require LODY_AUTH_URL');
   }
   const logger = getLogger('session');
-  const manager = await LoroDocumentManager.create(
-    workspace.id as WorkspaceId,
-    auth.userId,
-    logger,
-    {
-      attachRemoteOnCreate: true,
-      streamsTokens: createCloudStreamsTokenPort({
-        token: auth.token,
-        authBaseUrl: LODY_AUTH_URL,
-        authSiteUrl: LODY_AUTH_SITE_URL,
-        logger,
-      }),
-      cloudBilling: createCloudBillingPort({ token: auth.token }),
-    }
+  let manager: LoroDocumentManager;
+  const sessionHistoryFactory = createCommandSessionHistoryFactory(
+    () => manager,
+    auth,
+    workspace.id as WorkspaceId
   );
+  manager = await LoroDocumentManager.create(workspace.id as WorkspaceId, auth.userId, logger, {
+    attachRemoteOnCreate: true,
+    streamsTokens: createCloudStreamsTokenPort({
+      token: auth.token,
+      authBaseUrl: LODY_AUTH_URL,
+      authSiteUrl: LODY_AUTH_SITE_URL,
+      logger,
+    }),
+    cloudBilling: createCloudBillingPort({ token: auth.token }),
+    sessionHistoryFactory,
+  });
   try {
     return await fn(manager);
   } finally {
@@ -1039,13 +1051,19 @@ async function syncMachineFlockDocsForRead(
   machineIds: readonly MachineId[],
   reason: string
 ): Promise<void> {
+  const logger = getLogger('session');
   await Promise.all(
-    Array.from(new Set(machineIds)).map(
-      async (machineId) =>
+    Array.from(new Set(machineIds)).map(async (machineId) => {
+      try {
         await manager.syncFlockDocOrThrow(getMachineFlockDocId(workspaceId, machineId), {
           reason: `${reason}:${machineId}`,
-        })
-    )
+        });
+      } catch (error) {
+        logger.warn(
+          `Machine Flock freshness sync was not confirmed (${reason}:${machineId}); continuing from the local replica: ${formatErrorMessage(error)}`
+        );
+      }
+    })
   );
 }
 
@@ -1112,7 +1130,7 @@ export async function resolveLocalProjectBranchForCreate(
     return undefined;
   }
 
-  const gitState = await getLocalProjectGitStateAtRootPath(project.rootPath);
+  const gitState = await localProjectsLegacy.getLocalProjectGitStateAtRootPath(project.rootPath);
   if (!gitState.git) {
     if (options.requireGit === true) {
       throw new Error('Cannot use --worktree with a local project that is not a git repository.');
@@ -1141,7 +1159,7 @@ export async function resolveLocalProjectBranchForCreate(
   // `branch` is either a selector this project reported or a name a human typed
   // as `--branch`. A typed `main` may match both refs/heads/main and
   // refs/remotes/origin/main, so validate it the way git resolves it.
-  await resolveLocalProjectBranchAtRootPath(project.rootPath, branch, {
+  await localProjectsLegacy.resolveLocalProjectBranchAtRootPath(project.rootPath, branch, {
     preferLocalOnCollision: true,
   });
   return branch;
@@ -1166,7 +1184,7 @@ export function normalizeLocalProjectPathSelector(selector: string): string | un
   if (!normalizedSelector || !isPathLikeLocalProjectSelector(normalizedSelector)) {
     return undefined;
   }
-  return normalizeLocalProjectRootPath(normalizedSelector);
+  return localProjectsLegacy.normalizeLocalProjectRootPath(normalizedSelector);
 }
 
 export function selectLocalProjectsBySelector<T extends LocalProjectSelectorCandidate>(
@@ -1187,7 +1205,8 @@ export function selectLocalProjectsBySelector<T extends LocalProjectSelectorCand
       projectRootPath === normalizedSelector ||
       (normalizedPathSelector !== undefined &&
         projectRootPath !== undefined &&
-        normalizeLocalProjectRootPath(projectRootPath) === normalizedPathSelector)
+        localProjectsLegacy.normalizeLocalProjectRootPath(projectRootPath) ===
+          normalizedPathSelector)
     );
   });
 }
@@ -1303,12 +1322,13 @@ async function resolveRunningAssistantTurnId(
   return resolveActiveAssistantTurnId(history)?.trim();
 }
 
-async function appendUserPromptHistory(args: {
+export async function appendUserPromptHistory(args: {
   sessionDoc: SessionDocument;
   prompt: string;
   userId: string;
   inputConfig?: SessionHistoryInput['inputConfig'];
   author?: MessageAuthor;
+  inputBlocks?: SessionInputBlock[];
   preallocatedId?: string;
   /** History the caller already read, so the idempotency check can skip a re-read. */
   knownHistory?: readonly SessionHistory[];
@@ -1320,12 +1340,20 @@ async function appendUserPromptHistory(args: {
     const history = args.knownHistory ?? (await backend.readHistory());
     const existing = history.find((entry) => entry.id === historyId);
     if (existing) {
-      const existingText = existing.items?.find((item) => item.type === 'text');
       if (
         existing.role !== 'user' ||
-        existingText?.type !== 'text' ||
-        existingText.text !== prompt ||
-        !isDeepStrictEqual(existing.inputConfig ?? {}, inputConfig ?? {})
+        !isDeepStrictEqual(
+          JSON.parse(JSON.stringify(existing.items)),
+          JSON.parse(
+            JSON.stringify(
+              inputBlocksToHistoryItems(args.inputBlocks ?? buildCommandInputBlocks(prompt))
+            )
+          )
+        ) ||
+        !isDeepStrictEqual(
+          JSON.parse(JSON.stringify(normalizeSessionTurnInputConfig(existing.inputConfig) ?? {})),
+          JSON.parse(JSON.stringify(normalizeSessionTurnInputConfig(inputConfig) ?? {}))
+        )
       ) {
         throw new Error(`Preallocated user turn id is already used: ${historyId}`);
       }
@@ -1345,7 +1373,7 @@ async function appendUserPromptHistory(args: {
     status: 'pending',
     read: false,
     userId,
-    items: [{ type: 'text', text: prompt }],
+    items: inputBlocksToHistoryItems(args.inputBlocks ?? buildCommandInputBlocks(prompt)),
     inputConfig,
     fileDiff: [],
     finished: true,
@@ -1359,6 +1387,7 @@ async function appendUserPromptHistory(args: {
 }
 
 function buildCliHistoryInputConfig(args: {
+  inputBlocks?: SessionInputBlock[];
   memory?: import('@lody/shared').MemoryBinding;
   prompt: string;
   cliType: SessionMeta['cliType'];
@@ -1371,6 +1400,9 @@ function buildCliHistoryInputConfig(args: {
 }): NonNullable<SessionHistoryInput['inputConfig']> {
   return {
     memory: args.memory,
+    ...(args.inputBlocks?.some((block) => block.type !== 'text')
+      ? { inputBlocks: args.inputBlocks }
+      : {}),
     prompt: args.prompt,
     cliType: args.cliType,
     agentType: args.agentType,
@@ -2045,73 +2077,6 @@ async function ensureLocalRuntimeAvailable(
   }
 }
 
-function readPositiveIntEnv(name: string, fallback: number): number {
-  const raw = normalizeCliValue(process.env[name]);
-  if (!raw) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-async function createMachineRpcClient(args: {
-  auth: AuthContext;
-  workspaceId: WorkspaceId;
-  machineId: MachineId;
-}): Promise<LoroStreamsMachineRpcClient> {
-  if (!LODY_AUTH_URL) {
-    throw new Error('Cloud machine RPC requires LODY_AUTH_URL');
-  }
-  const logger = getLogger('session');
-  const cliHttpFetch = getCliHttpFetch({ logger });
-  const streamsTokenProvider = createCloudStreamsTokenPort({
-    token: args.auth.token,
-    authBaseUrl: LODY_AUTH_URL,
-    authSiteUrl: LODY_AUTH_SITE_URL,
-    logger,
-  }).createTokenProvider({ workspaceId: args.workspaceId });
-  const baseUrl = await prepareCliStreamsGatewayBaseUrl(streamsTokenProvider);
-  const streamClient = createLoroStreamsJsonStreamClient({
-    bucketId: LORO_STREAMS_BUCKET_ID,
-    getToken: async () => await streamsTokenProvider.getToken(),
-    // Keep the prepared URL available during an auth-triggered token refresh;
-    // prefer a newly returned gateway after the refresh completes.
-    getBaseUrl: () => streamsTokenProvider.getGatewayBaseUrl() ?? baseUrl,
-    shardUrls: getLoroStreamsShardUrls(baseUrl, streamsTokenProvider.getShardHostSuffix()),
-    fetchImpl: cliHttpFetch,
-    timeout: {
-      connectTimeoutMs: readPositiveIntEnv('LODY_LORO_RPC_CONNECT_TIMEOUT_MS', 30_000),
-    },
-  });
-  const client = new LoroStreamsMachineRpcClient({
-    workspaceId: args.workspaceId,
-    machineId: args.machineId,
-    streamClient,
-    rpcVersion: LORO_STREAMS_RPC_VERSION,
-    retentionSeconds: LORO_STREAMS_RPC_RETENTION_SECONDS,
-    now: getServerNow,
-    logger,
-  });
-  await client.start();
-  return client;
-}
-
-async function withMachineRpcClient<T>(
-  args: {
-    auth: AuthContext;
-    workspaceId: WorkspaceId;
-    machineId: MachineId;
-  },
-  fn: (client: LoroStreamsMachineRpcClient) => Promise<T>
-): Promise<T> {
-  const client = await createMachineRpcClient(args);
-  try {
-    return await fn(client);
-  } finally {
-    client.stop();
-  }
-}
-
 async function ensureTargetMachineOnline(args: {
   auth: AuthContext;
   workspaceId: WorkspaceId;
@@ -2668,14 +2633,17 @@ export async function readLocalProjectGitStateOnMachine(args: {
   localRootPath: string;
   requesterUserId: string;
 }): Promise<
-  | { success: true; state: Awaited<ReturnType<typeof getLocalProjectGitStateAtRootPath>> }
+  | {
+      success: true;
+      state: Awaited<ReturnType<typeof localProjectsLegacy.getLocalProjectGitStateAtRootPath>>;
+    }
   | { success: false; error: string; message?: string }
 > {
   if (args.machineId === args.auth.machineId) {
     try {
       return {
         success: true,
-        state: await getLocalProjectGitStateAtRootPath(args.localRootPath),
+        state: await localProjectsLegacy.getLocalProjectGitStateAtRootPath(args.localRootPath),
       };
     } catch (error) {
       return { success: false, error: formatErrorMessage(error) };
@@ -3238,6 +3206,25 @@ export async function prepareSessionInput(
   });
 
   const sessionId = options.sessionId ?? (uuidV4() as SessionId);
+  const attachments =
+    options.inputAttachments ??
+    (await prepareSessionInputAttachments({
+      paths: options.attach ?? [],
+      cwd: process.cwd(),
+      workspaceId: workspace.id as WorkspaceId,
+      sessionId,
+      sourceMachineId: auth.machineId,
+      targetMachineId: targetMachine.id,
+      ...(options.attach?.length
+        ? {
+            relay: createCommandAttachmentTransfer(
+              auth.token,
+              Boolean(getSessionCommandEnvironment())
+            ),
+          }
+        : {}),
+    }));
+  const inputBlocks = buildCommandInputBlocks(prompt, attachments);
   const repoFullName = resolveProjectGitHubRepo(project);
   const baseBranch = project?.kind === 'local' ? undefined : project?.branch?.trim();
   // An explicit title is final: `user` blocks both the agent-pushed and the
@@ -3254,7 +3241,10 @@ export async function prepareSessionInput(
     isArchived: false,
     cliType: agentConfig.cliType,
     agentType: agentConfig.agentType,
-    historyBackend: NEW_SESSION_HISTORY_BACKEND,
+    historyBackend: resolveNewSessionHistoryBackend(targetMachine, {
+      requested: options.historyBackend,
+      preferred: NEW_SESSION_HISTORY_BACKEND,
+    }),
     agentConfigId: agentConfig.id,
     ...(title ? { title, titleSource: 'user' as const } : {}),
     ...(draftTitle ? { title: draftTitle, titleSource: 'draft' as const } : {}),
@@ -3285,7 +3275,7 @@ export async function prepareSessionInput(
     read: !!ownerTarget || machineSupportsPreparedSessionInputProtocol(targetMachine),
     userId: requesterUserId,
     author: options.delegatedRequester?.author ?? { v: 1, kind: 'human', userId: requesterUserId },
-    items: [{ type: 'text', text: prompt }],
+    items: inputBlocksToHistoryItems(inputBlocks),
     inputConfig: {
       ...(options.agentRoleId
         ? {
@@ -3296,6 +3286,7 @@ export async function prepareSessionInput(
         : {}),
       ...buildCliHistoryInputConfig({
         prompt: buildAgentPrompt(prompt, agentConfig.prompt ?? ''),
+        inputBlocks,
         cliType: agentConfig.cliType,
         agentType: agentConfig.agentType,
         memory: effectiveDispatchConfig.memory,
@@ -3491,7 +3482,8 @@ export async function sendSessionChatResult(
     chainDepth: number;
     bypassSessionQuota?: boolean;
   },
-  delegatedRequester?: DelegatedSessionRequester
+  delegatedRequester?: DelegatedSessionRequester,
+  input?: { paths?: string[]; attachments?: SessionInputAttachment[] }
 ): Promise<{
   sessionId: SessionId;
   machineId: MachineId;
@@ -3565,7 +3557,27 @@ export async function sendSessionChatResult(
     !dispatchConfig.runConfig
       ? resolveSessionConversationConfig(historyForDefaults)
       : undefined;
+  const attachments =
+    input?.attachments ??
+    (await prepareSessionInputAttachments({
+      paths: input?.paths ?? [],
+      cwd: process.cwd(),
+      workspaceId: workspace.id as WorkspaceId,
+      sessionId,
+      sourceMachineId: auth.machineId,
+      targetMachineId: session.machineId,
+      ...(input?.paths?.length
+        ? {
+            relay: createCommandAttachmentTransfer(
+              auth.token,
+              Boolean(getSessionCommandEnvironment())
+            ),
+          }
+        : {}),
+    }));
+  const inputBlocks = buildCommandInputBlocks(prompt, attachments);
   const userTurn = await appendUserPromptHistory({
+    inputBlocks,
     sessionDoc,
     prompt,
     userId: requesterUserId,
@@ -3575,6 +3587,7 @@ export async function sendSessionChatResult(
       agentRoleRevision: roleSelection?.agentRoleRevision,
       agentRoleSnapshot: roleSelection?.agentRoleSnapshot,
       ...buildCliHistoryInputConfig({
+        inputBlocks,
         prompt,
         cliType: session.cliType,
         agentType: session.agentType,
@@ -4064,12 +4077,18 @@ const sessionCreateCommand = new Command('create')
     collectListOption,
     []
   )
+  .option('--attach <path>', 'Attach a file from this machine; repeatable', collectListOption, [])
   .option('--prompt <text>', 'Prompt text')
   .option('--prompt-file <path>', 'Read prompt text from file, or - for stdin')
   .option('--json', 'Print JSON output')
   .option('--jsonl', 'Print JSON Lines output')
   .option('--wait', 'Wait for the assistant turn to complete before exiting')
   .option('--timeout <seconds>', 'Wait timeout in seconds for --wait', parsePositiveIntOption)
+  .option(
+    '--history-backend <kind>',
+    'History backend for this session (default: loro)',
+    parseSessionHistoryBackend
+  )
   .option('--debug', 'Enable debug output')
   .argument('[prompt]', 'Prompt text')
   .action(async (promptArg: string | undefined, options: CreateOptions) => {
@@ -4250,6 +4269,7 @@ const sessionChatCommand = new Command('chat')
     collectListOption,
     []
   )
+  .option('--attach <path>', 'Attach a file from this machine; repeatable', collectListOption, [])
   .option('--prompt <text>', 'Prompt text')
   .option('--prompt-file <path>', 'Read prompt text from file, or - for stdin')
   .option('--json', 'Print JSON output')
@@ -4282,11 +4302,13 @@ const sessionChatCommand = new Command('chat')
           sessionIdArg,
           promptArg,
           envSessionId: process.env.LODY_SESSION_ID,
-          hasNonPositionalPromptSource: hasNonPositionalPromptSource({
-            prompt: options.prompt,
-            promptFile: options.promptFile,
-            stdinText: stdinState.text,
-          }),
+          hasNonPositionalPromptSource:
+            Boolean(options.attach?.length) ||
+            hasNonPositionalPromptSource({
+              prompt: options.prompt,
+              promptFile: options.promptFile,
+              stdinText: stdinState.text,
+            }),
         });
 
         const workspace = await resolveWorkspaceForSessionOrThrow(
@@ -4316,7 +4338,11 @@ const sessionChatCommand = new Command('chat')
                   timeoutMs: resolveStructuredOutputTimeoutMs(options.timeout),
                   onEvent: outputMode === 'jsonl' ? (event) => printJson(event) : undefined,
                 }
-              : undefined
+              : undefined,
+            undefined,
+            undefined,
+            undefined,
+            { paths: options.attach }
           );
           const completionPromise = result.completionPromise;
           const response = {

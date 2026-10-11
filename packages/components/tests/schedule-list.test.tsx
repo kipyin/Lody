@@ -236,6 +236,49 @@ describe('schedule list rows', () => {
     expect(onBlankClick).toHaveBeenCalledTimes(2);
     portal.remove();
   });
+
+  it('clears the status bar on the edge-to-edge list and stays flush when embedded', () => {
+    const header = () => container.querySelector('header')!;
+    const embeddedClass = header().className;
+    expect(header().hasAttribute('data-safe-area-inset')).toBe(false);
+    act(() =>
+      root.render(
+        <ScheduleListView
+          insetSafeArea
+          rows={[manual, timed]}
+          runtimes={[]}
+          ready
+          now={NOW}
+          contextForRow={context}
+          {...handlers}
+        />
+      )
+    );
+    expect(header().hasAttribute('data-safe-area-inset')).toBe(true);
+    // The safe-area rule replaces the fixed 44px height. jsdom does not
+    // apply the StyleX sheet, so the class change is the check.
+    expect(header().className).not.toBe(embeddedClass);
+  });
+
+  it('uses the home search text and hides the standalone header', () => {
+    act(() =>
+      root.render(
+        <ScheduleListView
+          hideHeader
+          query="night"
+          rows={[manual, timed]}
+          runtimes={[]}
+          ready
+          now={NOW}
+          contextForRow={context}
+          {...handlers}
+        />
+      )
+    );
+    expect(container.querySelector('header')).toBeNull();
+    expect(container.textContent).toContain('Nightly review');
+    expect(container.textContent).not.toContain('Deploy checklist');
+  });
 });
 
 describe('schedule list sidebar chrome', () => {

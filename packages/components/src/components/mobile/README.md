@@ -19,7 +19,7 @@ directory index. Stories: `src/stories/Mobile*.stories.tsx`.
   scroll region.
 - `mobile-project-screen.tsx`, `mobile-chat-landing-screen.tsx`,
   `mobile-archive-screen.tsx` — the other top-level screens.
-- `mobile-workspace-layout.tsx`, `mobile-workspace-tabbar.tsx`,
+- `mobile-workspace-layout.tsx`, [`mobile-workspace-tabbar.tsx`](../../../../../specs/mobile-workspace-dock.md),
   `mobile-workspace-stack.tsx` (SessionDetail layered over the always-mounted
   home/chat landing), `mobile-sidebar-drawer.tsx` (swipe-to-open code retained but
   disabled), `mobile-connection-status.tsx`.
@@ -69,6 +69,9 @@ directory index. Stories: `src/stories/Mobile*.stories.tsx`.
   `permission-mode-face.tsx` (classified by `@lody/shared`
   `classifyPermissionModeFace`), `mobile-inline-picker.tsx`,
   `mobile-settings-picker-trigger.tsx`.
+- Provider-defined pickers have a separate coordinator ID namespace, so an ACP
+  option named `permission` or `model` cannot open or dismiss a built-in row.
+  [Collision fix and builtin audit](../../../../../.agents/notes/implemented/bug-fix/2026-10-09-dimcode-mobile-permission-picker.md).
 - `mobile-session-composer-footer.tsx` still exports the legacy
   `MobileModelPickerLabel` helpers for any remaining chip faces;
   `mobile-fast-plan-toggles.tsx` survives for the in-session composer only.

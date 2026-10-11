@@ -1,3 +1,4 @@
+import { SessionInputAttachmentsSchema } from '@/lib/session-input-content';
 import {
   MemoryBindingSchema,
   AgentMessageAuthorSchema,
@@ -414,6 +415,11 @@ export class LodyOperationStore {
     const fingerprint = fingerprintLodyCommand(input.kind, canonical);
     const frozenConfig = FrozenConfigSchema.parse(input.frozenContinuationConfig);
     const items = z.array(OperationItemSchema).parse(input.items);
+    const targetAttachments = input.targetInputAttachments
+      ? z.array(SessionInputAttachmentsSchema).max(20).parse(input.targetInputAttachments)
+      : undefined;
+    if (targetAttachments && targetAttachments.length !== items.length)
+      throw new Error('Target attachments must match Operation items.');
     const targetRoles = input.targetRoleSnapshots
       ? z.array(AgentRoleSnapshotSchema.nullable()).max(20).parse(input.targetRoleSnapshots)
       : undefined;
@@ -441,6 +447,7 @@ export class LodyOperationStore {
             ),
             claimedItemIndexes: [],
           };
+        this.assertOperationIdNotRetired(input.requesterSessionId, input.operationId);
         const inserted = this.db
           .prepare(
             `INSERT OR IGNORE INTO operations (
@@ -475,6 +482,13 @@ export class LodyOperationStore {
               author ? JSON.stringify(author) : null,
               targetRoles ? JSON.stringify(targetRoles) : null
             );
+        }
+        if (inserted.changes === 1 && targetAttachments) {
+          this.db
+            .prepare(
+              'INSERT INTO operation_inputs (requester_session_id, operation_id, attachments_json) VALUES (?, ?, ?)'
+            )
+            .run(input.requesterSessionId, input.operationId, JSON.stringify(targetAttachments));
         }
         const operation = this.getStored(input.requesterSessionId, input.operationId);
         if (!operation) throw new Error('Accepted Operation was not readable after insert.');
@@ -542,7 +556,10 @@ export class LodyOperationStore {
     sourceTurnId?: string
   ): StoredLodyOperation | undefined {
     const existing = this.getStored(requesterSessionId, operationId);
-    if (!existing) return undefined;
+    if (!existing) {
+      this.assertOperationIdNotRetired(requesterSessionId, operationId);
+      return undefined;
+    }
     const fingerprint = fingerprintLodyCommand(kind, canonicalizeLodyCommand(canonicalCommand));
     return this.assertMatching(existing, kind, fingerprint, requesterUserId, sourceTurnId);
   }
@@ -1268,6 +1285,21 @@ export class LodyOperationStore {
     return row === undefined ? undefined : this.decodeOperation(row);
   }
 
+  private assertOperationIdNotRetired(requesterSessionId: SessionId, operationId: string): void {
+    const retired = this.db
+      .prepare(
+        'SELECT 1 FROM operation_retired_ids WHERE requester_session_id = ? AND operation_id = ?'
+      )
+      .get(requesterSessionId, operationId);
+    if (retired !== undefined) {
+      throw new LodyOperationStoreError(
+        'OPERATION_ID_REUSED',
+        `Operation id ${operationId} has already completed and its result has expired.`,
+        false
+      );
+    }
+  }
+
   private assertMatching(
     operation: StoredLodyOperation,
     kind: LodyOperationKind,
@@ -1320,7 +1352,23 @@ export class LodyOperationStore {
     const author = authorRow?.author_json
       ? parseJson(authorRow.author_json, AgentMessageAuthorSchema, 'Operation author')
       : undefined;
+    const inputRow = this.db
+      .prepare(
+        'SELECT attachments_json FROM operation_inputs WHERE requester_session_id = ? AND operation_id = ?'
+      )
+      .get(parsed.requester_session_id, parsed.operation_id) as
+      | { attachments_json: string }
+      | undefined;
     return {
+      ...(inputRow
+        ? {
+            targetInputAttachments: parseJson(
+              inputRow.attachments_json,
+              z.array(SessionInputAttachmentsSchema).max(20),
+              'target attachments'
+            ) as NonNullable<StoredLodyOperation['targetInputAttachments']>,
+          }
+        : {}),
       ...(author ? { author } : {}),
       ...(authorRow?.target_roles_json
         ? {
@@ -1484,6 +1532,29 @@ export class LodyOperationStore {
       CREATE INDEX IF NOT EXISTS operations_active_owner
       ON operations (workspace_id, owner_machine_id, state, deadline_at);
 
+      CREATE TABLE IF NOT EXISTS operation_retired_ids (
+        requester_session_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        PRIMARY KEY (requester_session_id, operation_id)
+      );
+
+      CREATE TRIGGER IF NOT EXISTS operations_retire_id
+      BEFORE DELETE ON operations WHEN OLD.state = 'finished'
+      BEGIN
+        INSERT OR IGNORE INTO operation_retired_ids (requester_session_id, operation_id)
+        VALUES (OLD.requester_session_id, OLD.operation_id);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS operations_reject_retired_id
+      BEFORE INSERT ON operations
+      WHEN EXISTS (
+        SELECT 1 FROM operation_retired_ids
+        WHERE requester_session_id = NEW.requester_session_id AND operation_id = NEW.operation_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'Operation id has already completed and expired.');
+      END;
+
       CREATE TABLE IF NOT EXISTS deliveries (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         workspace_id TEXT NOT NULL,
@@ -1554,6 +1625,14 @@ export class LodyOperationStore {
         FOREIGN KEY (requester_session_id, operation_id)
           REFERENCES operations(requester_session_id, operation_id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS operation_inputs (
+        requester_session_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        attachments_json TEXT NOT NULL,
+        PRIMARY KEY (requester_session_id, operation_id),
+        FOREIGN KEY (requester_session_id, operation_id)
+          REFERENCES operations(requester_session_id, operation_id) ON DELETE CASCADE
+      );
       CREATE TABLE IF NOT EXISTS orchestration_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -1594,6 +1673,9 @@ export class LodyOperationStore {
     const requiredObjects = new Set([
       'table:operations',
       'index:operations_active_owner',
+      'table:operation_retired_ids',
+      'trigger:operations_retire_id',
+      'trigger:operations_reject_retired_id',
       'table:deliveries',
       'index:deliveries_pending_session',
       'table:delivery_execution_state',
@@ -1602,6 +1684,7 @@ export class LodyOperationStore {
       'table:operation_progress_settlements',
       'table:orchestration_meta',
       'table:operation_authors',
+      'table:operation_inputs',
     ]);
     const existingObjects = this.db
       .prepare(
