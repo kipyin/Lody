@@ -156,8 +156,8 @@ CLI process-options 只组合 Layer，旧 promise-facade 已删除。Sandbox 失
 成功命令在配置完成、整棵树退出和 stdio 关闭后释放子 Scope；所有进程消费保留 Legacy 可见。
 
 文件锁是之后第一个依赖单元，见[文件锁决定](../../implemented/architecture/2026-10-10-effect-file-lock-lifecycle.zh.md)：
-真实文件协议、公平且可取消的本地登记、可观察的清理失败。Git、worktree setup/GC、
-登录环境等待、runtime 安装、启动闸门、SDK 请求、Session 与 Turn 仍需迁移；进程统一
+真实文件协议、公平且可取消的本地登记、可观察的清理失败。LocalProjects 和 WorktreeGit 执行已有待审的原生内核；worktree 变更/setup/GC、
+runtime 安装、启动闸门、SDK 请求、Session 与 Turn 仍需迁移；进程统一
 不代表这些生命周期或 daemon 所有权已完成。
 
 ### L2 与 Loro 同步栈
@@ -265,15 +265,24 @@ flowchart TD
   P --> C["Scope 释放失败与恢复租约：#1379"]
   C --> F
   C --> G["LocalProjects 原生 Git"]
-  F --> J["worktree setup / GC"]
+  C --> Q["WorktreeGit 执行：#1389"]
+  F --> O["WorktreeObservations: #1392"]
+  Q --> O
+  Q --> B["LocalWorktreePreparation"]
+  B --> J
+  O --> J["worktree 变更 / setup / GC"]
   G --> J
   F --> R["Runtime 下载 / 安装"]
-  P --> E["登录环境 / 启动闸门"]
+  C --> E["原生登录 shell 探测：#1397"]
+  E --> EC["应用 shell 缓存所有权：#1397"]
+  P --> SG["ACP 启动闸门：待完成"]
   P --> A["可独立的 ACP transport → 领域操作"]
   J --> S["AgentSession / 会话池"]
   R --> S
-  E --> S
+  EC --> S
+  SG --> S
   A --> S
+  N["已合并 #1385：运行实例凭据 / 预热 TTL 叶子"] --> S
   K["Lody Flock 持久化已实现；仍需核实发布 / 消费"] --> L["streams-crdt / loro-repo Effect 内核：分别跨仓库 PR"]
   L --> D["文档 / 历史 / presence"]
   S --> T["Turn / steer / 停止 / 收尾"]
@@ -284,7 +293,13 @@ flowchart TD
   M --> X["Electron / supervisor 上层编排"]
 ```
 
-文件锁门面的原生程序错误投影同样依赖 #1379，内核仍使用既有 pid 探测；文件锁由 [#1377](https://github.com/LodyAI/Lody/pull/1377) 审查。原生 Git 验证发现 Scope 释放失败曾被吞掉，独立修复 [#1379](https://github.com/LodyAI/Lody/pull/1379) 保留恢复租约。LocalProjects 在 #1379 之上的 [#1381](https://github.com/LodyAI/Lody/pull/1381) 审查，其内核不依赖 FileLocks；worktree setup/GC 需要同时集成两者。这些仍是 draft PR，不能标为已合并。
+文件锁门面的原生程序错误投影同样依赖 #1379，内核仍使用既有 pid 探测；文件锁由 [#1377](https://github.com/LodyAI/Lody/pull/1377) 审查。原生 Git 验证发现 Scope 释放失败曾被吞掉，独立修复 [#1379](https://github.com/LodyAI/Lody/pull/1379) 保留恢复租约。LocalProjects 在 #1379 之上的 [#1381](https://github.com/LodyAI/Lody/pull/1381) 审查，其内核不依赖 FileLocks；worktree setup/GC 需要同时集成两者。WorktreeGit 执行由 [#1389](https://github.com/LodyAI/Lody/pull/1389) 审查，内核只依赖进程基础和文件系统；为避免重复管理器改动，评审 base 包含 LocalProjects。
+原生 [worktree 观察单元](../../implemented/architecture/2026-10-10-effect-worktree-observations.zh.md)
+在包含刷新 main 的基础上组合 FileLocks 和 WorktreeGit，不代表变更、setup 或 GC 所有权完成。
+#1385 已合并，仅提供运行实例凭据租约和预热 TTL/控制；底层 ACP/worktree 启动及完整会话所有权仍未完成。
+有限[本地源准备单元](../../implemented/architecture/2026-10-10-effect-local-worktree-preparation.zh.md) 依赖文件系统/Git，借用既有变更租约。评审 base 包含观察单元，因为管理器边界共享；原生内核并不互相依赖。
+库侧前置核对：本集成消费 Flock 0.4.3、streams-crdt 0.16.1 和 loro-repo 0.21.1。公开 npm registry 现已发布 streams-crdt 0.16.2 和 loro-repo 0.21.2，Flock 仍为 0.4.3；这不是已消费的升级，也不证明 Effect 内核完成。库侧迁移前仍须读取各自规则并核对当前源码/检查点契约。
+这些后续迁移单元仍是 draft PR，不能标为已合并。
 
 接入首个真正长生命周期服务时建立统一 daemon ManagedRuntime 与根 Scope，随单元迁移扩展；
 最终集成继续保留两阶段关停。已登记删除条件的临时上游适配可解除 Lody 集成阻塞，但不能
@@ -303,6 +318,38 @@ flowchart TD
 已合入 main。[#1057](https://github.com/LodyAI/Lody/pull/1057) 合入了原基础分支而非 main；
 [#1355](https://github.com/LodyAI/Lody/pull/1355) 只将这两份中英文计划恢复到 main。
 
-旧 #1355 → #1065 → #1069 → #1348 stack 已全部合并，不继续修改其分支。文件锁及之后
-可独立审查的单元从刷新后的 main 开始，仅按实际依赖组成新的 stack。固定 catalog 当前
-为 4.0.2，每次交付前刷新版本和 GitHub 状态；余下工作按上图推进，不继承旧 stack 的完成标签。
+此前 #1355 → #1065 → #1069 → #1348 已合并。共享官方进程服务保留 Lody 有界后端，
+调用方迁移不等于整个 L0/L1 或 daemon 所有权完成。新评审使用新分支及实际依赖边；
+文件锁 #1377、Git 叶子 #1381/#1389、worktree 查询 #1392 和本地准备 #1394 是评审
+单元，不宣称 mutations、setup/GC 或 Session 取消已完成。
+
+独立的[登录 shell 探测单元](../../implemented/architecture/2026-10-10-effect-login-shell-probe.zh.md)
+依赖进程释放失败所有权 #1379，不依赖 worktree 准备。#1397 已原生化有限探测与
+应用缓存；CLI/Electron 入口通过根 runtime 拥有此服务，剩余启动器使用显式 Legacy
+访问器，不代表其它 daemon 拥有者已迁移。维护两个真实路径：
+
+```mermaid
+flowchart LR
+  P[原生进程服务与释放所有权] --> S[原生登录 shell 探测]
+  S --> C[应用拥有的 shell 缓存：#1397]
+  P --> G[Git 与文件系统/锁评审单元]
+  G --> W[worktree setup 和 GC：待完成]
+  C --> A[ACP 启动组合：待完成]
+  W --> A
+  L[Loro 库生命周期：待完成] --> T[Turn：待完成]
+  A --> Q[连接与 Session 所有权：待完成]
+  Q --> T
+```
+
+有限探测保留 CLI 三秒 pending 等待，同时保留实际失败；它不迁移 runtime 下载或启动
+闸门。Loro 库主线保持独立；Turn 等待真实两边依赖，而非按层号全局串行。
+
+### 当前评审 stack
+
+七个 draft 评审组成一条线性 stack：
+
+```text
+main → #1379 → #1377 → #1381 → #1389 → #1392 → #1394 → #1397
+```
+
+每份 PR 以其前一份 PR 的 head 分支为 base，并包含该前置分支，替代临时 worktree/shell 整合 base。这是评审与合并顺序：LocalProjects 不获取 FileLocks，Git 执行内核不要求 LocalProjects，有限 shell 探测依赖进程所有权，不依赖 worktree 准备。后续规划继续保留上面的真实依赖图。进程获取错误转换现已保留配置失败和全部未解决的恢复租约。这些 PR 仍是 draft，stack 不代表后续 daemon 阶段完成。

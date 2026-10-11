@@ -66,6 +66,32 @@ catch })` and pass the signal on, so interruption aborts the work.
   `onSpawned` hook). A listener attached after a fiber yield can miss an event
   that already fired.
 
+## Login-shell probes and application-owned cache
+
+`LoginShellEnvironmentLive` injects host selection and the existing official
+process service. Candidate shells share one Clock deadline; core composition
+never executes. `LoginShellCacheLive` owns one producer in a child Scope and
+retains its complete Exit for later readers. CLI readers retain their 3-second
+pending-overlay behavior; cancellation and timeout affect only that local reader.
+Application shutdown rejects new readers, interrupts and joins the producer, then
+closes its child Scope. Process cleanup keeps its own bounded backend and recovery
+leases. There is no Promise cache, cache timer or independent shell-probe runner.
+
+CLI index and Electron startApplication each compose the application's first
+long-lived native service through makeApplicationRuntime. Concurrent disposal joins
+one receipt; failed disposal retains the original ownership Cause across failed
+recovery attempts. Replacement is allowed only after release is confirmed.
+CLI graceful/one-shot/fatal exits await that owner; failed graceful cleanup exits
+with a failure code. Electron stops it inside the existing quit barrier after
+renderer unload approval, and a later quit retries unresolved resources.
+Remaining launchers use the visible getLoginShellEnvLegacy,
+getCachedLoginShellEnvSyncLegacy and getUserShellEnvCachedLegacy accessors.
+probeLoginShellEnvLegacy and the test-only reset facade are deleted. Remove the
+remaining accessors/binding bridge once launchers receive LoginShellCache directly.
+This first application runtime does not migrate the remaining Session/Turn/Loro
+owners or establish end-to-end daemon shutdown. See the
+[decision and limits](../notes/implemented/architecture/2026-10-10-effect-login-shell-probe.md).
+
 ## Process service and resource ownership
 
 Use `ChildProcess` and `ChildProcessSpawner` from `effect/process`. The shared
@@ -104,6 +130,21 @@ monitor fibers, then removes cgroup resources. `startProcessLegacy` is reserved 
 legacy synchronous/raw Node handles (including IPC and explicit detach), whose
 owner must await `terminate`; it is not a scoped Effect API.
 
+## Local-project Git
+
+`LocalProjects` / `LocalProjectsLive` own native repository observation and branch
+workflows. Their dependencies are `LocalProjectPaths` (official FileSystem),
+`LocalProjectHost` (an Effect reading each command's environment), and the official
+process spawner. `localProjectLayer` only composes Layers. Existing CLI command,
+control, session and worktree-observation entrypoints execute this same kernel
+through the one deprecated `localProjectsLegacy` facade. Keep that name visible;
+new Effect callers yield native methods. Remove the facade when those application
+owners provide LocalProjects. Its synchronous identity methods remain blocking.
+Expected Git absence remains a domain result; process, deadline, corruption,
+filesystem and release failures propagate. This does not complete worktree
+setup/GC or the daemon's root runtime. Decision and limits:
+[local-project Git](../notes/implemented/architecture/2026-10-10-effect-local-project-git.md).
+
 ## File locks
 
 `withFileLock(name, body, options)` requires `FileLocks`. `FileLocksLive` captures
@@ -123,23 +164,8 @@ application entrypoints execute them through `fileLocksLegacy.runPromise`; workt
 cloudflared and Baguette use its `withLock` callback adapter. This one deprecated
 facade shares a process-lifetime ManagedRuntime so local queue waiting retains its
 old deadline meaning. Remove it when those entrypoints use the daemon runtime.
-Catalog read caching, Git/worktrees and downloads are still under migration.
-
-## Local-project Git
-
-`LocalProjects` / `LocalProjectsLive` own native repository observation and branch
-workflows. Their dependencies are `LocalProjectPaths` (official FileSystem),
-`LocalProjectHost` (an Effect reading each command's environment), and the official
-process spawner. `localProjectLayer` only composes Layers. Existing CLI command,
-control, session and worktree-observation entrypoints execute this same kernel
-through the one deprecated `localProjectsLegacy` facade. Keep that name visible;
-new Effect callers yield native methods. Remove the facade when those application
-owners provide LocalProjects. Its synchronous identity methods remain blocking.
-Expected Git absence remains a domain result; process, deadline, corruption,
-filesystem and release failures propagate. This does not complete worktree
-setup/GC or the daemon's root runtime. Decision and limits:
-[local-project Git](../notes/implemented/architecture/2026-10-10-effect-local-project-git.md).
-
+Catalog read caching, worktree setup/GC and downloads are still under migration.
+Local-project Git is native as described above; full worktree ownership is separate.
 ## Worktree Git execution
 
 `WorktreeGit` / `WorktreeGitLive` own native command execution, status checking and
@@ -153,6 +179,18 @@ catches. Preserve mixed Fail/Die Cause when mapping commands on pinned v4; ordin
 mapError can select only the Fail reason. This is not native manager/setup/GC or
 daemon runtime completion. Decision:
 [worktree Git](../notes/implemented/architecture/2026-10-10-effect-worktree-git-execution.md).
+
+## Worktree observations
+
+`WorktreeObservations` composes official FileSystem, WorktreeGit and the owning
+FileLocks instance. Inspection/listing acquire the repo lease; information reads
+inside mutations reuse their caller's lock. Failed Git observations do not become
+phantom dirty records or null HEAD. Queued cancellation and command cleanup remain
+structured inside this kernel. The Promise manager's `runObservationLegacy` composes through `runWorktreeLegacy`,
+which executes in the existing `fileLocksLegacy` runtime, with no second lock coordinator.
+Delete it when the mutation owner receives native services. Synchronous manager
+path/existence methods, setup, GC and the daemon runtime still need migration. See
+[the decision](../notes/implemented/architecture/2026-10-10-effect-worktree-observations.md).
 
 ## Temporary Promise facades
 
@@ -241,3 +279,14 @@ The guard rejects retired facade imports/exports and aliases that hide Legacy.
 API reference: [official migration guide](https://github.com/Effect-TS/effect/blob/main/MIGRATION.md).
 Use the pinned package's declarations to verify details: the upstream guide can
 advance beyond the installed release.
+
+
+## Local worktree preparation
+
+`LocalWorktreePreparation` composes official FileSystem, WorktreeGit and Clock under
+an already-held mutation lease. It owns the metadata scratch directory before
+writing and publishes only a complete file. Failed five-second cleanup retains a
+bounded recovery Effect. The manager's `runWorktreeLegacy` preserves primary and
+scratch release failures through the existing fileLocksLegacy runtime. Delete the
+executor when native mutations receive services; bare clone/fetch, setup and GC
+remain outside this finite unit. See the [decision](../notes/implemented/architecture/2026-10-10-effect-local-worktree-preparation.md).

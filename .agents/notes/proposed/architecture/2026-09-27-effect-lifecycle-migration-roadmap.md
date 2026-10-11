@@ -232,7 +232,8 @@ exit and drained stdio. Legacy imports stay visible across all process consumers
 File locks are the first subsequent dependency unit; see the
 [file-lock decision](../../implemented/architecture/2026-10-10-effect-file-lock-lifecycle.md).
 They supply a real filesystem protocol, fair interruptible local admission and
-observable cleanup failures. Git, worktree setup/GC, login-shell waiting, managed
+observable cleanup failures. LocalProjects and WorktreeGit execution have native
+kernels under draft review; worktree mutation/setup/GC, managed
 runtime installation, startup gates, SDK requests, Sessions and Turns remain to
 migrate. Process unification does not finish those lifecycles or daemon ownership.
 
@@ -387,15 +388,24 @@ flowchart TD
   P --> C["Scope release failure and recovery leases: #1379"]
   C --> F
   C --> G["LocalProjects native Git"]
-  F --> J["worktree setup / GC"]
+  C --> Q["WorktreeGit execution: #1389"]
+  F --> O["WorktreeObservations: #1392"]
+  Q --> O
+  Q --> B["LocalWorktreePreparation"]
+  B --> J
+  O --> J["worktree mutations / setup / GC"]
   G --> J
   F --> R["Runtime download / installation"]
-  P --> E["Login environment / startup gate"]
+  C --> E["Native login-shell probe: #1397"]
+  E --> EC["Application shell-cache ownership: #1397"]
+  P --> SG["ACP start gate: pending"]
   P --> A["Independent ACP transport → domain operations"]
   J --> S["AgentSession / session pool"]
   R --> S
-  E --> S
+  EC --> S
+  SG --> S
   A --> S
+  N["Merged #1385: runtime credentials / preparation TTL leaves"] --> S
   K["Flock persistence: implemented in Lody; verify release / consumption"] --> L["streams-crdt / loro-repo Effect kernels: separate repositories"]
   L --> D["Documents / history / presence"]
   S --> T["Turn / steer / stop / finalization"]
@@ -412,8 +422,18 @@ Native Git validation exposed swallowed Scope release failure; the independent
 correction [#1379](https://github.com/LodyAI/Lody/pull/1379) retains recovery leases.
 LocalProjects is reviewed in [#1381](https://github.com/LodyAI/Lody/pull/1381)
 above #1379. Its kernel does not depend on FileLocks; worktree setup/GC must
-integrate both.
-These are draft PRs, not merged work.
+integrate both. WorktreeGit execution is reviewed in
+[#1389](https://github.com/LodyAI/Lody/pull/1389); its kernel needs the process
+foundation and filesystem, while its review base includes LocalProjects to avoid
+repeating manager changes. The native
+[worktree observation unit](../../implemented/architecture/2026-10-10-effect-worktree-observations.md)
+integrates FileLocks and WorktreeGit on a foundation containing refreshed main.
+It does not complete mutation/setup/GC ownership. #1385 is merged and supplies
+runtime credential leases and preparation TTL/control only; raw ACP/worktree
+startup and full session ownership remain unfinished.
+The finite [local-source preparation unit](../../implemented/architecture/2026-10-10-effect-local-worktree-preparation.md) depends on filesystem/Git and borrows the existing mutation lease. Its review base includes observations because their manager boundary is shared; the native kernels are independent.
+Library-side prerequisite verification: this integration consumes Flock 0.4.3, streams-crdt 0.16.1 and loro-repo 0.21.1. The public npm registry now publishes streams-crdt 0.16.2 and loro-repo 0.21.2 (Flock remains 0.4.3); these are not consumed upgrades or proof of an Effect kernel. Re-read the upstream rules and reconcile current source/checkpoint contracts before library migration.
+These subsequent migration units are draft PRs, not merged work.
 
 Introduce one daemon ManagedRuntime and root Scope when the first real long-lived
 services enter composition; extend it as units migrate. The final integration
@@ -441,8 +461,50 @@ migration to v4, is merged into main. [#1057](https://github.com/LodyAI/Lody/pul
 merged into its former base branch rather than main; [#1355](https://github.com/LodyAI/Lody/pull/1355)
 restores only these bilingual plans onto main.
 
-The old #1355 → #1065 → #1069 → #1348 stack is fully merged. Do not edit its
-branches. Start the file-lock unit and subsequent independently reviewable units
-from refreshed main, stacking only actual dependencies. The current fixed catalog
-is 4.0.2; refresh it and GitHub state before each delivery. Remaining work follows
-the dependency graph above, not completion labels inherited from the old stack.
+The former #1355 → #1065 → #1069 → #1348 stack is merged. The shared official
+process service retains Lody's bounded backend; its caller migration does not
+finish whole L0/L1 or daemon ownership. New reviews use fresh branches and actual
+dependency edges. File locks (#1377), Git leaves (#1381/#1389), worktree observations
+(#1392) and local preparation (#1394) are review units, not a claim that mutations,
+setup/GC or Session cancellation are complete.
+
+The independent [login-shell probe unit](../../implemented/architecture/2026-10-10-effect-login-shell-probe.md)
+depends on process release-failure ownership (#1379), not worktree preparation.
+Its finite probe and application-owned cache are native in #1397. CLI/Electron
+entries now own this service through their root runtime; remaining launchers use
+explicit Legacy accessors. This does not finish other daemon owners. Maintain both actual paths:
+
+```mermaid
+flowchart LR
+  P[Native process service + release ownership] --> S[Native login-shell probe]
+  S --> C[Application-owned shell cache: #1397]
+  P --> G[Git + filesystem/locks review units]
+  G --> W[Worktree setup and GC: pending]
+  C --> A[ACP startup composition: pending]
+  W --> A
+  L[Loro library lifecycle: pending] --> T[Turn: pending]
+  A --> Q[Connection and Session ownership: pending]
+  Q --> T
+```
+
+The finite probe preserves the CLI three-second pending wait while retaining
+actual failures. It does not migrate runtime downloads or the startup gate. The
+Loro library mainline remains independent; Turn waits for both actual dependency
+paths, not a global sequence of layer numbers.
+
+### Current review stack
+
+The seven draft reviews form one linear stack:
+
+```text
+main → #1379 → #1377 → #1381 → #1389 → #1392 → #1394 → #1397
+```
+
+Each PR targets the preceding PR's head branch and contains that predecessor.
+This replaces the temporary worktree/shell integration bases. The order is a
+review and merge sequence: LocalProjects does not acquire FileLocks, the Git
+execution kernel does not require LocalProjects, and the finite shell probe
+requires process ownership rather than worktree preparation. Preserve the actual
+dependency diagrams above when planning the next units. Process acquisition error
+conversion now retains setup failure and every unresolved recovery lease. These
+PRs remain drafts; this stack does not mark any subsequent daemon phase complete.

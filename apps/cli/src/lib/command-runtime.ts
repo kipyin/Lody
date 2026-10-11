@@ -1,3 +1,4 @@
+import { closeLoginShellApplicationLegacy } from '@/agent/login-shell-env';
 import {
   createServerTimeFetcher,
   getLoroStreamsShardUrls,
@@ -579,6 +580,7 @@ async function flushWritableStream(stream: NodeJS.WriteStream): Promise<void> {
 }
 
 async function exitOneShotCommand(code: number): Promise<void> {
+  await closeLoginShellApplicationLegacy();
   process.exitCode = code;
   // Flush buffered analytics before the process can terminate: one-shot commands
   // may exit immediately and the flush timer is unref'd, so events would be lost.

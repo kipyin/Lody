@@ -42,8 +42,13 @@ record: [process tree layer](../../../../.agents/notes/implemented/architecture/
   `apps/electron/src/main`, `packages/cli-supervisor`,
   `packages/code-review-helper` and this directory; its allowlist names each
   exception and its reason.
-- The login-shell environment has one probe, `login-shell-env.ts`, shared by
-  the CLI and the desktop.
+- Login-shell probes use `LoginShellEnvironment`; the shared `LoginShellCache`
+  Layer owns one producer in the application's Scope. Reader cancellation/timeout
+  does not stop siblings; application shutdown interrupts and joins the producer.
+  `makeApplicationRuntime` joins concurrent disposal and retains recovery owners
+  after failed Scope close. Only named Legacy application boundaries execute.
+  Preserve timeout/release failure owners; never cache failure as empty success. Read [the decision](../../../../.agents/notes/implemented/architecture/2026-10-10-effect-login-shell-probe.md)
+  before changing the probe or either cache consumer.
 - `process.ts` stays one module with no relative imports: Electron's
   `node --test` cannot resolve extensionless relative imports.
 - Missing a capability (a new spawn shape, a pid-only kill)? Add it to
