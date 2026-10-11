@@ -2385,7 +2385,7 @@ describe('SessionExecutionService', () => {
       'Teammate',
       'teammate@example.com',
       'user-2',
-      { preferMachineIdentity: false }
+      { preferMachineIdentity: false, personalIdentityEnabled: false }
     );
   });
 

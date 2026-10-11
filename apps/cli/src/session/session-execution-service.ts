@@ -5036,12 +5036,20 @@ export class SessionExecutionService {
         let turnStartWorkingTreeDiff: GitWorkingTreeDiffBaseline | null = null;
 
         // A requester switch re-derives commit identity for this turn only;
-        // the policy lookup never blocks the turn (falls back to owner rules).
-        const gitIdentityOptions = yield* self.tryPromise(async () => {
+        // the bounded policy lookup falls back to owner rules on failure.
+        const gitIdentityOptions = yield* self.tryPromise(async (signal) => {
           try {
-            return await self.deps.sessionManager.resolveGitIdentityOptions(message.userId);
+            return await self.deps.sessionManager.resolveGitIdentityOptions(
+              message.userId,
+              signal,
+              sessionId
+            );
           } catch {
-            return { preferMachineIdentity: message.userId === self.deps.userId };
+            signal.throwIfAborted();
+            return {
+              preferMachineIdentity: message.userId === self.deps.userId,
+              personalIdentityEnabled: false,
+            };
           }
         });
         const bindReadySession = (nextSession: ISession): void => {
