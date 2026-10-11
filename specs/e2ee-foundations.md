@@ -31,6 +31,14 @@ not establish author identity or authority. It does not expose a signer, private
 transport or production feature switch. Platform custody and full content opening
 remain separate work. This draft is not product or all-platform acceptance.
 
+The separate HPKE epoch primitive preserves Base X25519/HKDF-SHA-256/ChaCha20-Poly1305,
+info `lody-e2ee/hpke-epoch/v1\0` and canonical four-field ledger AAD. It seals only
+a 32-byte epoch key to `enc32/ct48`, accepts externally owned device key handles,
+and exposes no delivery or installation workflow. Host secure randomness is
+required; async native completion precedes temporary-buffer cleanup and cancellation
+completion. Outer signatures, current eligibility and epoch commitments remain
+mandatory caller responsibilities; HPKE validity does not establish sender identity.
+
 ## Evidence
 
 [Module and entrypoints](../packages/e2ee-core/README.md),

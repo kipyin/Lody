@@ -76,5 +76,28 @@
       "Wipe temporary epoch/key/PRK/plaintext copies; no signing private key or runtime service.",
       "Run ordinary try/finally cleanup before yielding Results: Effect 4.0.2 Result.gen does not close its iterator on typed failure."
     ]
+  },
+  "hpkeExtraction": {
+    "destination": "src/crypto/hpke.ts",
+    "destinationSha256": "c4811caf2cee69338e36f031e7b7e3e682978c1c89feedde9e514805a9ad233e",
+    "sources": {
+      "platform/hpke.ts": "2713f9093fdf7b981ada99162ee7e32ceb04b6fc0c93590dca996fb1c38d2a68",
+      "ports/hpke.ts": "ee045b6b6ef524a9847a821fe0f8b38a1f24998ca43e164aa7dab2c52c046fe9",
+      "pure/epoch-envelope.ts": "06908c666fba41c3759bc2fc15e0b991ba9d50255dc60c2f9a4288cccce7b820"
+    },
+    "sourceSpec": {
+      "path": "specs/e2ee-ledger.zh.md",
+      "sha256": "a3476fb61dba95d4e525665c4e6540f9b8d51759dd409d69fce9a1974233749a",
+      "scope": "Sections 8.4-8.5; fixed Base suite, info, canonical four-field AAD and epoch envelope bytes"
+    },
+    "scope": "Unsigned fixed epoch HPKE seal/open only; no signer, authority, full envelope workflow, install, delivery, recovery or platform store",
+    "adaptations": [
+      "Retain candidate @hpke/core 1.9.0, @hpke/chacha20poly1305 1.8.0 and @hpke/common 1.10.1 closure; Effect 4.0.2 unchanged.",
+      "Revalidate caller context and lengths before copying; preserve fixed Base mode, info, AAD and plaintext/ciphertext sizes.",
+      "Require host secure randomness with no public entropy hook; wipe operation-owned IKM/plaintext on success and failure.",
+      "Borrow native device CryptoKeyPair per call; compare its public key to trusted expected recipient; no identity generation/export/storage.",
+      "Return Effect values without creating a runtime, service or background fiber; await non-cancellable native settlement and ordinary try/finally cleanup on interruption.",
+      "Legacy JSON key-envelope.ts and ledger/delivery workflows are excluded."
+    ]
   }
 }

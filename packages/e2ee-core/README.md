@@ -13,8 +13,10 @@ foundation entry is `@lody/e2ee-core`; it uses the root Effect 4.0.2 catalog.
 | `verifyContentSignature` | v0 signature against caller-supplied scope and trusted signer |
 | `deriveContentKey` | HKDF-SHA-256 scoped opaque leaf from `Bytes.EpochKey` |
 | `sealContentAead` / `openContentAead` | Content v0 XChaCha20-Poly1305 primitive; separate signature/authority checks required |
+| `epochHpkeAad` / `sealEpochKeyHpke` / `openEpochKeyHpke` | Fixed Base epoch HPKE primitive; no sender authentication, authority or installation |
 
-Use `Effect.fromResult` in existing workflows; this package starts no runtime.
+Compose HPKE Effects directly and use `Effect.fromResult` for Result primitives
+in existing workflows; this package starts no runtime.
 CBOR encoding budgets the expanded wire size before serialization and copies only
 bounded data. Shared values remain valid within 8192 bytes; cycles return a Result
 failure. These limits bound data traversal, not arbitrary code in getters/proxies.
@@ -29,8 +31,8 @@ P14 can consume `Bytes.SigningPublicKey`, `Bytes.EncryptionPublicKey`,
 handles stay in the platform owner. `EncryptionPublicKey` preserves the candidate's
 32-byte, nonzero wire-shape check; it is not proof of safe X25519 agreement or
 possession. Do not use it as one. No generic signer or key export is introduced.
-HPKE, document-key import/export and full signed content workflows remain future
-slices; no SDK or repo dependency is needed here.
+Full signed HPKE delivery, document-key import/export and signed content workflows
+remain future slices; no SDK or repo dependency is needed here.
 
 Source files and exact input SHA-256 values are in [provenance.json](provenance.json).
 Extraction omits ledger/snapshot schemas, trust caches, injected executors,
@@ -94,3 +96,34 @@ provides strict records, signature/chain verification and deterministic permissi
 replay from caller-pinned trust. It has no snapshot, CAS, journal or production
 consumer. The root exports and crypto modules remain unchanged. Ledger extraction
 fingerprints are [separate](src/ledger/provenance.json).
+
+## HPKE epoch primitive (P07-c)
+
+`epochHpkeAad`, `sealEpochKeyHpke` and `openEpochKeyHpke` preserve the existing
+ledger envelope's Base suite: DHKEM(X25519, HKDF-SHA-256), HKDF-SHA-256 and
+ChaCha20-Poly1305 (RFC identifiers 0x0020/0x0001/0x0003). Info is exactly
+`lody-e2ee/hpke-epoch/v1\0`, including the final zero byte. AAD is canonical
+DAG-CBOR `[genesis32, epoch(u32), senderSign32, recipientSign32]`, supplied from
+independently trusted caller context. Plaintext is one opaque 32-byte EpochKey;
+output is `enc32` and `ct48`. The existing full envelope remains
+`AAD || enc32 || ct48 || signature64`, signed over
+`lody-e2ee/epoch-env/v1\0 || AAD || enc32 || ct48`. This slice does not construct,
+sign, authenticate, deliver or install that full envelope.
+
+The functions return Effect values with fixed, non-secret errors. Execute them in
+the caller's existing Effect owner. Every new seal gets 32 bytes of host secure
+randomness for DHKEM derivation, with no public entropy override or retry fallback.
+Opening requires a caller-owned X25519 CryptoKeyPair and its independently trusted
+expected encryption public key. No private-key generation/export/store is added.
+Temporary plaintext and random copies are wiped after native work settles;
+interruption waits for that cleanup because WebCrypto has no abort API. This is
+not a bounded shutdown guarantee if the host's native crypto never settles, nor
+complete erasure of library/native-runtime internal copies.
+
+Base decryption **does not authenticate a sender or grant authority**. Callers must
+verify the outer signature, current sending/receiving eligibility, recipient key
+binding and epoch-key commitment before using or durably installing the result,
+and recheck authority after async operations. Those workflows remain separate.
+The primitive exposes no transport, ledger shortcut, recovery format or production
+switch. [HPKE tests](test/hpke.test.ts) cover independently encoded RFC/Python
+vectors, trusted-context mismatch, lengths, randomness failure and interruption.

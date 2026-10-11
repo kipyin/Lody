@@ -30,3 +30,9 @@ Contract: [foundation Spec](../../specs/e2ee-foundations.md). Entry map: [README
   or a module-created verified view. No arbitrary-state constructor, injected verifier,
   snapshot placeholder, or journal-derived trust. Failed suffixes preserve the prior view.
 - Reject legacy non-atomic member removal; its replacement belongs to P12.
+
+- HPKE is the fixed Base X25519/HKDF-SHA-256/ChaCha20-Poly1305 epoch
+  primitive, not an authorized envelope workflow. Keep the existing info and
+  canonical AAD; never accept an algorithm/info override. Caller-owned native
+  device key handles stay external; no key generation, storage or delivery here.
+  Await non-cancellable native work and temporary-buffer cleanup on interruption.

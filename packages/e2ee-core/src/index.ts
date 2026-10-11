@@ -25,3 +25,11 @@ export {
   type ContentKey,
   type SealedContentAead,
 } from './crypto/content';
+export {
+  epochHpkeAad,
+  sealEpochKeyHpke,
+  openEpochKeyHpke,
+  HpkePrimitiveError,
+  type EpochHpkeContext,
+  type SealedEpochHpke,
+} from './crypto/hpke';
