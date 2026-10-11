@@ -62,7 +62,10 @@ rolls back — is in the root [AGENTS.md](../../../../../AGENTS.md).
   names stay on the default interface font. Five tiers write `--ui-font-size`;
   sizes use `@lody/ui` text tokens. Font ligatures in the Text group writes
   `--lody-font-ligatures` for conversation, code, and tool output.
-- The Codex reset forecast chip in the provider row must not fetch on mount:
+- Provider rows show identity, read-only remaining quota, a direct flat forecast
+  action, and a persistent Provider `…` menu. The forecast action opens its dialog
+  in one step; no quota-details interstitial or forecast probability belongs in
+  the overview. Listing rows does not fetch forecasts:
   [../codex-reset/AGENTS.md](../codex-reset/AGENTS.md).
 - The usage share card is a fixed-format report, not a second `ChatShareCard`:
   fixed aspects, period = page range, headline = range total.

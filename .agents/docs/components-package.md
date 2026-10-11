@@ -119,8 +119,14 @@ against the route and the dev server answers with the SPA fallback HTML.
 request storm. Loading only when a user opens a surface, coalescing concurrent callers
 onto one in-flight request, and clamping the served `Cache-Control: max-age` to 1m–5m
 (the endpoint's CDN-shaped 4h is wrong for someone who just opened the panel) keep it to
-roughly one 304 per interaction. An always-visible composer band was rejected because it
-would have to load in the background to know whether to render at all.
+roughly one 304 per interaction. Settings puts a stable read-only remaining-quota
+summary, a flat direct Reset forecast action, and a Provider action menu in the row.
+The action opens the existing forecast dialog in one step; there is no quota-details
+interstitial repeating visible data. Forecast probabilities appear only in that
+dialog, never beside the row's remaining-quota percentages. See the
+[provider quota overview draft](../../specs/provider-quota-overview.md).
+An always-visible composer band was rejected because it would have to load in the
+background to know whether to render at all.
 
 The parser also normalizes `scheduled_reset` independently of `active_watch`. Both entry
 points and the dialog prioritize an announced schedule over the forecast probability.
