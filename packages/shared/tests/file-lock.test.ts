@@ -3,10 +3,23 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { NodeFileSystem } from '@effect/platform-node-shared';
 import { describe, expect, it } from '@effect/vitest';
-import { Cause, Clock, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Option } from 'effect';
+import {
+  Cause,
+  Clock,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  FileSystem,
+  Layer,
+  Option,
+  Scope,
+} from 'effect';
 import { systemError } from 'effect/PlatformError';
 import { TestClock } from 'effect/testing';
 import {
+  FILE_LOCK_CLEANUP_MS,
+  FileLockCleanupFailed,
   FileLockHost,
   FileLocksLive,
   LockReleaseFailed,
@@ -496,6 +509,247 @@ describe('native file locks', () => {
             )
           )
         );
+      })
+  );
+
+  it.effect(
+    'bounds interrupted release, retains the original unlink and never removes its successor',
+    () =>
+      Effect.gen(function* () {
+        const { filesystem, locksDir } = yield* fixture;
+        const lockPath = path.join(locksDir, 'bounded.lock');
+        const removing = yield* Deferred.make<void>();
+        const deletion = yield* Deferred.make<void>();
+        const ready = yield* Deferred.make<void>();
+        const firstDeadline = yield* Deferred.make<void>();
+        const nextDeadline = yield* Deferred.make<void>();
+        const cancelledDeadline = yield* Deferred.make<void>();
+        let deadline = firstDeadline;
+        const clock = yield* Clock.Clock;
+        const cleanupClock = clockWithSleep(clock, (duration) =>
+          Deferred.succeed(deadline, undefined).pipe(Effect.andThen(clock.sleep(duration)))
+        );
+        const stalled = FileSystem.FileSystem.of({
+          ...filesystem,
+          remove: (file, options) =>
+            file === lockPath
+              ? Deferred.succeed(removing, undefined).pipe(
+                  Effect.andThen(Deferred.await(deletion)),
+                  Effect.andThen(filesystem.remove(file, options))
+                )
+              : filesystem.remove(file, options),
+        });
+        const context = yield* Layer.build(
+          FileLocksLive.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(FileSystem.FileSystem, stalled),
+                Layer.succeed(NodeProcess, nodeProcessLive),
+                Layer.succeed(FileLockHost, { locksDir, pid: process.pid })
+              )
+            )
+          )
+        ).pipe(Effect.provideService(Clock.Clock, cleanupClock));
+        yield* Effect.gen(function* () {
+          const holder = yield* withFileLock(
+            'bounded',
+            Deferred.succeed(ready, undefined).pipe(Effect.andThen(Effect.never))
+          ).pipe(Effect.forkChild);
+          yield* Deferred.await(ready);
+          const stopping = yield* Fiber.interrupt(holder).pipe(
+            Effect.andThen(Fiber.await(holder)),
+            Effect.forkChild
+          );
+          yield* Deferred.await(removing);
+          yield* Deferred.await(firstDeadline);
+          yield* TestClock.adjust(FILE_LOCK_CLEANUP_MS);
+          const exit = yield* Fiber.join(stopping);
+          const error = errorOf(exit);
+          expect(error).toBeInstanceOf(LockReleaseFailed);
+          if (!(error instanceof LockReleaseFailed) || !error.cleanup)
+            throw new Error('missing cleanup owner');
+          expect(fs.existsSync(lockPath)).toBe(true);
+          deadline = nextDeadline;
+          let successorRan = false;
+          const queued = yield* withFileLock(
+            'bounded',
+            Effect.sync(() => {
+              successorRan = true;
+            })
+          ).pipe(Effect.forkChild);
+          yield* Deferred.await(nextDeadline);
+          yield* TestClock.adjust(FILE_LOCK_CLEANUP_MS);
+          expect(errorOf(yield* Fiber.await(queued))).toBeInstanceOf(LockReleaseFailed);
+          expect(successorRan).toBe(false);
+          expect(fs.existsSync(lockPath)).toBe(true);
+          deadline = cancelledDeadline;
+          const cancelled = yield* withFileLock(
+            'bounded',
+            Effect.sync(() => {
+              successorRan = true;
+            })
+          ).pipe(Effect.forkChild);
+          yield* Deferred.await(cancelledDeadline);
+          yield* Fiber.interrupt(cancelled);
+          const cancelledExit = yield* Fiber.await(cancelled);
+          expect(
+            Exit.isFailure(cancelledExit) && Cause.hasInterruptsOnly(cancelledExit.cause)
+          ).toBe(true);
+          expect(successorRan).toBe(false);
+          expect(fs.existsSync(lockPath)).toBe(true);
+          yield* Deferred.succeed(deletion, undefined);
+          yield* error.cleanup.retryCleanup;
+          const nextReady = yield* Deferred.make<void>();
+          const nextGate = yield* Deferred.make<void>();
+          const next = yield* withFileLock(
+            'bounded',
+            Deferred.succeed(nextReady, undefined).pipe(Effect.andThen(Deferred.await(nextGate)))
+          ).pipe(Effect.forkChild);
+          yield* Deferred.await(nextReady);
+          const generation = fs.readFileSync(lockPath, 'utf8');
+          yield* error.cleanup.retryCleanup;
+          expect(fs.readFileSync(lockPath, 'utf8')).toBe(generation);
+          yield* Deferred.succeed(nextGate, undefined);
+          yield* Fiber.join(next);
+          expect(fs.readdirSync(locksDir)).toEqual([]);
+        }).pipe(Effect.provideContext(context));
+      })
+  );
+
+  it.effect(
+    'bounds Layer disposal and transfers pending cleanup for recovery after Scope closure',
+    () =>
+      Effect.gen(function* () {
+        const { filesystem, locksDir } = yield* fixture;
+        const owner = yield* Scope.make();
+        const started = yield* Deferred.make<void>();
+        const gate = yield* Deferred.make<void>();
+        const operationDeadline = yield* Deferred.make<void>();
+        const disposalDeadline = yield* Deferred.make<void>();
+        let deadline = operationDeadline;
+        const clock = yield* Clock.Clock;
+        const cleanupClock = clockWithSleep(clock, (duration) =>
+          Deferred.succeed(deadline, undefined).pipe(Effect.andThen(clock.sleep(duration)))
+        );
+        const lockPath = path.join(locksDir, 'disposed.lock');
+        const stalled = FileSystem.FileSystem.of({
+          ...filesystem,
+          remove: (file, options) =>
+            file === lockPath
+              ? Deferred.succeed(started, undefined).pipe(
+                  Effect.andThen(Deferred.await(gate)),
+                  Effect.andThen(filesystem.remove(file, options))
+                )
+              : filesystem.remove(file, options),
+        });
+        const context = yield* Layer.build(
+          FileLocksLive.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(FileSystem.FileSystem, stalled),
+                Layer.succeed(NodeProcess, nodeProcessLive),
+                Layer.succeed(FileLockHost, { locksDir, pid: process.pid })
+              )
+            )
+          )
+        ).pipe(Scope.provide(owner), Effect.provideService(Clock.Clock, cleanupClock));
+        const operation = yield* withFileLock('disposed', Effect.void).pipe(
+          Effect.provideContext(context),
+          Effect.forkChild
+        );
+        yield* Deferred.await(started);
+        yield* Deferred.await(operationDeadline);
+        yield* TestClock.adjust(FILE_LOCK_CLEANUP_MS);
+        expect(errorOf(yield* Fiber.await(operation))).toBeInstanceOf(LockReleaseFailed);
+        deadline = disposalDeadline;
+        const closing = yield* Scope.close(owner, Exit.void).pipe(Effect.forkChild);
+        yield* Deferred.await(disposalDeadline);
+        yield* TestClock.adjust(FILE_LOCK_CLEANUP_MS);
+        const closed = yield* Fiber.await(closing);
+        const failed = Exit.isFailure(closed)
+          ? closed.cause.reasons.flatMap((r) =>
+              Cause.isDieReason(r) && r.defect instanceof FileLockCleanupFailed ? [r.defect] : []
+            )[0]
+          : undefined;
+        expect(failed).toBeInstanceOf(FileLockCleanupFailed);
+        if (!failed?.releases[0]?.cleanup) throw new Error('disposal discarded cleanup owner');
+        expect(fs.existsSync(lockPath)).toBe(true);
+        yield* Deferred.succeed(gate, undefined);
+        yield* failed.releases[0].cleanup.retryCleanup;
+        expect(fs.readdirSync(locksDir)).toEqual([]);
+      })
+  );
+
+  it.effect(
+    'preserves body and all file cleanup failures across native and Legacy boundaries',
+    () =>
+      Effect.gen(function* () {
+        const { filesystem, locksDir } = yield* fixture;
+        const lockPath = path.join(locksDir, 'mixed.lock');
+        let denied = true;
+        const broken = FileSystem.FileSystem.of({
+          ...filesystem,
+          remove: (file, options) =>
+            denied && (file === lockPath || path.basename(file).startsWith('.lody-lock-'))
+              ? Effect.fail(
+                  systemError({ _tag: 'PermissionDenied', module: 'FileSystem', method: 'remove' })
+                )
+              : filesystem.remove(file, options),
+        });
+        const context = yield* Layer.build(
+          FileLocksLive.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(FileSystem.FileSystem, broken),
+                Layer.succeed(NodeProcess, nodeProcessLive),
+                Layer.succeed(FileLockHost, { locksDir, pid: process.pid })
+              )
+            )
+          )
+        );
+        const primary = new Error('task failed');
+        const work = path.join(locksDir, 'task-output');
+        let native: Cause.Cause<unknown> | undefined;
+        const program = withFileLock(
+          'mixed',
+          Effect.sync(() => fs.appendFileSync(work, 'one execution\n')).pipe(
+            Effect.andThen(Effect.fail(primary))
+          )
+        ).pipe(
+          Effect.catchCause((cause) => {
+            native = cause;
+            return Effect.failCause(cause);
+          }),
+          Effect.provideContext(context)
+        );
+        const projected = yield* Effect.promise(() =>
+          fileLocksLegacy.runPromise(program).catch((error: unknown) => error)
+        );
+        expect(projected).toBeInstanceOf(FileLockCleanupFailed);
+        if (!(projected instanceof FileLockCleanupFailed))
+          throw new Error('missing complete failure');
+        expect(projected.cause).toBe(primary);
+        expect(projected.fullCause).toBe(native);
+        expect(native?.reasons.some((r) => Cause.isFailReason(r) && r.error === primary)).toBe(
+          true
+        );
+        expect(projected.releases.map((e) => e.path).sort()).toEqual(
+          fs
+            .readdirSync(locksDir)
+            .filter((n) => n !== 'task-output')
+            .map((n) => path.join(locksDir, n))
+            .sort()
+        );
+        expect(fs.readFileSync(work, 'utf8')).toBe('one execution\n');
+        denied = false;
+        for (const failed of projected.releases) {
+          if (!failed.cleanup) throw new Error('missing retained resource');
+          yield* failed.cleanup.retryCleanup;
+        }
+        expect(
+          yield* withFileLock('mixed', Effect.succeed('next')).pipe(Effect.provideContext(context))
+        ).toBe('next');
+        expect(fs.readdirSync(locksDir)).toEqual(['task-output']);
       })
   );
 
