@@ -112,7 +112,11 @@ fixes pid and resolves the default lock directory on each operation; tests may
 inject a fixed directory.
 `fileLockLayer` supplies Node implementations at composition. One service instance
 owns local Ref/Deferred admission and unresolved releases; each operation owns its
-candidate and acquired file. See the [decision and preserved lock policy](../notes/implemented/architecture/2026-10-10-effect-file-lock-lifecycle.md).
+candidate and acquired file. Release waits have their own 5-second Clock bound;
+`LockReleaseFailed.cleanup` retains the original OS deletion for awaited retry.
+A still-pending deletion blocks replacement. Body and release run outside acquisition
+retry; `squashFileLockFailure` preserves their full Cause, file cleanup owners and
+process recovery leases at compatibility boundaries. See the [decision and preserved lock policy](../notes/implemented/architecture/2026-10-10-effect-file-lock-lifecycle.md).
 
 Catalog mutations compose the native API and require FileLocks. Existing Promise
 application entrypoints execute them through `fileLocksLegacy.runPromise`; worktree,
