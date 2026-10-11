@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./ledger": "./src/ledger/index.ts"
+    "./ledger": "./src/ledger/index.ts",
+    "./submission": "./src/submission/index.ts",
+    "./submission/sqlite": "./src/submission/sqlite.ts"
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
@@ -20,12 +22,15 @@
     "@noble/ciphers": "2.1.1",
     "@noble/ed25519": "3.2.0",
     "@noble/hashes": "2.2.0",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "better-sqlite3": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "3.2.4",
-    "oxfmt": "^0.65.0"
+    "oxfmt": "^0.65.0",
+    "@types/better-sqlite3": "catalog:",
+    "tsx": "4.23.7"
   }
 }

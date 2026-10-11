@@ -1565,16 +1565,25 @@ importers:
       '@noble/hashes':
         specifier: 2.2.0
         version: 2.2.0
+      better-sqlite3:
+        specifier: 'catalog:'
+        version: 13.0.3
       effect:
         specifier: 'catalog:'
         version: 4.0.2
     devDependencies:
+      '@types/better-sqlite3':
+        specifier: 'catalog:'
+        version: 7.6.13
       '@types/node':
         specifier: 'catalog:'
         version: 24.10.12
       oxfmt:
         specifier: ^0.65.0
         version: 0.65.0
+      tsx:
+        specifier: 4.23.7
+        version: 4.23.7
       typescript:
         specifier: 'catalog:'
         version: 5.9.3

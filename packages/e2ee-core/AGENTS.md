@@ -2,9 +2,10 @@
 
 Contract: [foundation Spec](../../specs/e2ee-foundations.md). Entry map: [README](README.md).
 
-- This package has no production entrypoint, transport, storage, snapshot trust,
+- This package has no production entrypoint, transport host, snapshot trust,
   private-key export or signing API. Keep the root export map explicit; ledger
-  records/replay live only under the explicit `./ledger` subentry.
+  records/replay live only under the explicit `./ledger` subentry. Local submission
+  workflow/storage live under `./submission` and `./submission/sqlite`; the root stays platform-neutral.
 - Preserve candidate wire algorithms, domains and versions. Expected malformed
   input returns Effect 4 Result errors; never silently repair or downgrade bytes.
 - Enforce CBOR limits before full expansion or copying: charge shared values by
@@ -30,6 +31,14 @@ Contract: [foundation Spec](../../specs/e2ee-foundations.md). Entry map: [README
   or a module-created verified view. No arbitrary-state constructor, injected verifier,
   snapshot placeholder, or journal-derived trust. Failed suffixes preserve the prior view.
 - Reject legacy non-atomic member removal; its replacement belongs to P12.
+
+- Submission persists original signed bytes before CAS, retries exact bytes, and
+  reads back before reporting success. Conflicts never re-sign. Terminal result,
+  pending removal and verified rollback pin save atomically; explicit consumption
+  is required. Application Scope owns storage; closing never deletes pending.
+- Journal bytes/checkpoints do not establish permissions. Reverify complete history
+  from external trusted genesis, including stored terminal results. No legacy-state
+  import, checkpoint restore, implicit repinning or bad-history skipping.
 
 - HPKE is the fixed Base X25519/HKDF-SHA-256/ChaCha20-Poly1305 epoch
   primitive, not an authorized envelope workflow. Keep the existing info and
