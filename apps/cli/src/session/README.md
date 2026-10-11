@@ -288,6 +288,12 @@ same-session replacement rather than pretending resources were released. See [th
 
 ### Commit identity
 
+`git-identity-policy.ts` bounds the complete policy lookup to 3 seconds per attempt,
+retries once, and returns personal identity disabled after two failures. Startup publishes
+`Resolving Git identity`; cancellation interrupts the waiter and fences identity updates
+and agent launch. Late policy results have no side effects. This deadline also covers
+per-turn identity refresh; it is separate from network credential fallback.
+
 The effective identity becomes `GIT_AUTHOR_*`/`GIT_COMMITTER_*` in the session env (`session.ts`
 `updateGitIdentity`, re-applied per turn via the execution service's `bindReadySession`). When
 the turn requester is the machine owner, the repository/machine Git identity is used without a cloud profile lookup; missing local
@@ -389,3 +395,10 @@ executes them through `runObservationLegacy`; list/inspect own repo leases, whil
 mutation information reads reuse the caller's lock. Missing and unborn state remain
 distinct from repository/infrastructure failures. See the
 [decision](../../../../.agents/notes/implemented/architecture/2026-10-10-effect-worktree-observations.md).
+## Conversation-tree stop
+
+The related-conversations action persists `collaborationStopped` on the creation tree.
+Execution reads inherited flags before setup and ACP dispatch. Metadata updates
+cancel exact active turns with pending input preserved, while late completions are
+recorded without continuation. Users must explicitly restore collaboration; offline
+machines enforce the state after sync. See the [orchestration contract](../../../../specs/session-orchestration.md#user-controlled-conversation-tree-stop).

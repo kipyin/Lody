@@ -1,3 +1,4 @@
+import { isSessionCollaborationStopped } from '@lody/shared';
 import {
   acpOwnsSessionTitleGeneration,
   type AcpModelControls,
@@ -3780,6 +3781,15 @@ export class SessionExecutionService {
       ).pipe(
         Effect.flatMap(() =>
           Effect.gen(function* () {
+            if (
+              yield* self.tryPromise(() =>
+                isSessionCollaborationStopped(self.deps.workspaceDocument.repo, sessionId)
+              )
+            ) {
+              runtime.cancelRequested = true;
+              runtime.pendingInputOnCancel = 'preserve';
+              return undefined;
+            }
             yield* self.acquireSessionActivePresence(sessionId, 'initializing');
 
             const setUnhandledErrorContext = (
@@ -3960,6 +3970,15 @@ export class SessionExecutionService {
                     return undefined;
                   }
                 }
+                if (
+                  yield* self.tryPromise(() =>
+                    isSessionCollaborationStopped(self.deps.workspaceDocument.repo, sessionId)
+                  )
+                ) {
+                  runtime.cancelRequested = true;
+                  runtime.pendingInputOnCancel = 'preserve';
+                }
+                yield* abortIfCancelled();
                 runtime.terminateSessionOnCancel = false;
                 self.deps.activateConversationTurnForACPUpdates(sessionId, runtime.turnId);
                 runtime.promptStarted = true;
@@ -4029,6 +4048,7 @@ export class SessionExecutionService {
               }),
               self.awaitInitializationStall(sessionId, sessionDoc, runtime)
             );
+            return undefined;
           })
         )
       )
@@ -5038,12 +5058,20 @@ export class SessionExecutionService {
         let turnStartWorkingTreeDiff: GitWorkingTreeDiffBaseline | null = null;
 
         // A requester switch re-derives commit identity for this turn only;
-        // the policy lookup never blocks the turn (falls back to owner rules).
-        const gitIdentityOptions = yield* self.tryPromise(async () => {
+        // the bounded policy lookup falls back to owner rules on failure.
+        const gitIdentityOptions = yield* self.tryPromise(async (signal) => {
           try {
-            return await self.deps.sessionManager.resolveGitIdentityOptions(message.userId);
+            return await self.deps.sessionManager.resolveGitIdentityOptions(
+              message.userId,
+              signal,
+              sessionId
+            );
           } catch {
-            return { preferMachineIdentity: message.userId === self.deps.userId };
+            signal.throwIfAborted();
+            return {
+              preferMachineIdentity: message.userId === self.deps.userId,
+              personalIdentityEnabled: false,
+            };
           }
         });
         const bindReadySession = (nextSession: ISession): void => {
@@ -6098,6 +6126,24 @@ export class SessionExecutionService {
           return undefined;
         }),
     };
+  }
+
+  /** Metadata stop barriers also cover descendants created after the UI snapshot. */
+  async reconcileCollaborationStops(): Promise<void> {
+    for (const [sessionId, runtime] of this.turnRuntimeBySession) {
+      if (await isSessionCollaborationStopped(this.deps.workspaceDocument.repo, sessionId)) {
+        await this.cancelSession(
+          {
+            type: 'session/cancel',
+            sessionId,
+            turnId: runtime.turnId,
+            machineId: this.deps.machineId,
+            workspaceId: this.deps.workspaceId,
+          },
+          { pendingInput: 'preserve', prePromptSession: 'discard' }
+        );
+      }
+    }
   }
 
   async cancelSession(
