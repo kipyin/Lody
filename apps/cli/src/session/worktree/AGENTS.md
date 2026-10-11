@@ -13,8 +13,8 @@ and file responsibilities: [../README.md](../README.md).
   spawner. Preserve the complete Cause when mapping command failure; pinned v4
   `mapError`/`catch` can discard release defects alongside a typed failure.
 - `worktreeGitLegacy` is the sole temporary manager execution facade; keep Legacy
-  visible and delete it when the manager becomes native. Infrastructure and
-  unresolved-release failures must escape fallback/forced-removal catches.
+  visible; delete it when the manager becomes native. Infrastructure,
+  FileLockCleanupFailed/LockReleaseFailed escape fallback/forced-removal catches.
   Setup, GC, manager filesystem/HTTP orchestration remain under migration.
   Decision: [worktree Git](../../../../../.agents/notes/implemented/architecture/2026-10-10-effect-worktree-git-execution.md).
 
