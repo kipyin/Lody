@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./ledger": "./src/ledger/index.ts"
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
@@ -13,7 +14,10 @@
     "format:check": "oxfmt --check 'src/**/*.ts' 'test/**/*.ts'"
   },
   "dependencies": {
+    "@hpke/chacha20poly1305": "1.8.0",
+    "@hpke/core": "1.9.0",
     "@ipld/dag-cbor": "10.0.2",
+    "@noble/ciphers": "2.1.1",
     "@noble/ed25519": "3.2.0",
     "@noble/hashes": "2.2.0",
     "effect": "catalog:"
